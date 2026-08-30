@@ -1,0 +1,46 @@
+# Example wiring for two August locks with DoorSense.
+# Append to automations.yaml (or drop into a package) and adjust the entity IDs.
+
+- id: auto_lock_front_door
+  alias: Auto-lock - Front Door
+  description: Door-aware auto-lock, resets whenever the front door is opened.
+  use_blueprint:
+    path: chuckbuilds/smart_auto_lock.yaml
+    input:
+      lock_entity: lock.front_door
+      door_sensor: binary_sensor.front_door_door
+      normal_delay: 20
+      guest_delay: 35
+      guest_mode: input_boolean.door_guest_mode
+      party_mode: input_boolean.door_party_mode
+      lock_attempts: 3
+
+- id: auto_lock_back_door
+  alias: Auto-lock - Back Door
+  description: Door-aware auto-lock, resets whenever the back door is opened.
+  use_blueprint:
+    path: chuckbuilds/smart_auto_lock.yaml
+    input:
+      lock_entity: lock.back_door
+      # Doubled "back" is not a typo - check your own entity ID before copying.
+      door_sensor: binary_sensor.back_back_door_door
+      normal_delay: 20
+      guest_delay: 35
+      guest_mode: input_boolean.door_guest_mode
+      party_mode: input_boolean.door_party_mode
+      lock_attempts: 3
+
+# Optional safety net: nobody ever remembers to turn party mode back off.
+- id: door_party_mode_auto_expire
+  alias: Door Party Mode - auto expire
+  description: Turns party mode off after 6 hours so the doors do not stay unlocked overnight.
+  mode: single
+  triggers:
+    - trigger: state
+      entity_id: input_boolean.door_party_mode
+      to: "on"
+      for: "06:00:00"
+  actions:
+    - action: input_boolean.turn_off
+      target:
+        entity_id: input_boolean.door_party_mode
