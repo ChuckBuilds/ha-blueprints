@@ -1,0 +1,186 @@
+blueprint:
+  name: Door-aware auto-lock (resettable countdown)
+  description: >-
+    Replacement for a smart lock's built-in auto-lock.
+
+    Instead of counting down from the moment the lock was unlocked, this waits
+    until the door contact sensor says the door is actually CLOSED, then starts
+    the countdown. Every time the door is opened again the countdown restarts,
+    so the lock can never throw the deadbolt into an open door and never fires
+    "too soon" during a stream of trips in and out.
+
+    Two override toggles are supported:
+      * Guest mode  - uses a longer, more forgiving countdown.
+      * Party mode  - never auto-locks while it is on. When it is switched off
+        the normal countdown starts again.
+
+    One automation per door. Remember to disable the lock's own auto-lock in the
+    manufacturer's app, or the two will fight each other.
+  domain: automation
+  input:
+    lock_entity:
+      name: Lock
+      description: The lock this automation manages.
+      selector:
+        entity:
+          filter:
+            - domain: lock
+    door_sensor:
+      name: Door contact sensor
+      description: >-
+        Must report "on" when the door is open. On August locks this is the
+        built-in "Door" sensor (DoorSense).
+      selector:
+        entity:
+          filter:
+            - domain: binary_sensor
+              device_class: door
+    normal_delay:
+      name: Normal countdown
+      description: Minutes to wait after the door is closed before locking.
+      default: 20
+      selector:
+        number:
+          min: 0.5
+          max: 240
+          step: 0.5
+          unit_of_measurement: minutes
+          mode: box
+    guest_delay:
+      name: Guest mode countdown
+      description: Minutes to wait while the guest mode toggle is on.
+      default: 35
+      selector:
+        number:
+          min: 0.5
+          max: 240
+          step: 0.5
+          unit_of_measurement: minutes
+          mode: box
+    guest_mode:
+      name: Guest mode toggle
+      description: While this is on, the guest countdown is used instead.
+      selector:
+        entity:
+          filter:
+            - domain: input_boolean
+    party_mode:
+      name: Party mode toggle
+      description: While this is on, the door is never auto-locked.
+      selector:
+        entity:
+          filter:
+            - domain: input_boolean
+    lock_attempts:
+      name: Lock attempts
+      description: >-
+        How many times to try locking before giving up. Battery locks
+        occasionally miss a command or jam against the strike plate.
+      default: 3
+      selector:
+        number:
+          min: 1
+          max: 5
+          step: 1
+          mode: slider
+
+# Only one countdown per door may be in flight. Any new trigger cancels the
+# pending run and starts a fresh one - that is what makes the timer resettable.
+mode: restart
+max_exceeded: silent
+
+variables:
+  lock_entity: !input lock_entity
+  door_sensor: !input door_sensor
+  guest_mode: !input guest_mode
+  party_mode: !input party_mode
+  normal_delay: !input normal_delay
+  guest_delay: !input guest_delay
+
+triggers:
+  # The lock was opened (app, keypad, key, or by hand).
+  - trigger: state
+    entity_id: !input lock_entity
+    to: unlocked
+    id: unlocked
+  # Door opened - cancels any pending lock.
+  - trigger: state
+    entity_id: !input door_sensor
+    to: "on"
+    id: door_opened
+  # Door closed - this is where the countdown really begins.
+  - trigger: state
+    entity_id: !input door_sensor
+    to: "off"
+    id: door_closed
+  # Mode changes re-evaluate the countdown immediately.
+  - trigger: state
+    entity_id: !input party_mode
+    to: "off"
+    id: party_off
+  - trigger: state
+    entity_id: !input party_mode
+    to: "on"
+    id: party_on
+  - trigger: state
+    entity_id: !input guest_mode
+    to: "on"
+    id: guest_on
+  - trigger: state
+    entity_id: !input guest_mode
+    to: "off"
+    id: guest_off
+  # In-flight countdowns do not survive a restart; pick them back up.
+  - trigger: homeassistant
+    event: start
+    id: ha_start
+
+conditions: []
+
+actions:
+  # Nothing to do unless the door is actually unlocked.
+  - condition: state
+    entity_id: !input lock_entity
+    state: unlocked
+
+  # Party mode: park here until it is switched off.
+  - wait_template: "{{ is_state(party_mode, 'off') }}"
+
+  # Never drive the deadbolt into an open door: wait for a real close.
+  # An unavailable sensor never satisfies this, so the lock stays put.
+  - wait_template: "{{ is_state(door_sensor, 'off') }}"
+
+  # Countdown. Evaluated at this moment, so a guest-mode change that happened
+  # before the door closed is already reflected.
+  - delay:
+      seconds: >-
+        {{ ((guest_delay if is_state(guest_mode, 'on') else normal_delay)
+            | float(20) * 60) | round(0) }}
+
+  # Re-check the world: this run may have been waiting a long time.
+  - condition: state
+    entity_id: !input door_sensor
+    state: "off"
+  - condition: state
+    entity_id: !input lock_entity
+    state: unlocked
+  - condition: state
+    entity_id: !input party_mode
+    state: "off"
+
+  # Lock, then verify. Stop as soon as it engages, or if the door reopens.
+  - repeat:
+      count: !input lock_attempts
+      sequence:
+        - action: lock.lock
+          target:
+            entity_id: !input lock_entity
+        - wait_template: "{{ is_state(lock_entity, 'locked') }}"
+          timeout: "00:00:30"
+          continue_on_timeout: true
+        - if:
+            - condition: template
+              value_template: >-
+                {{ is_state(lock_entity, 'locked') or is_state(door_sensor, 'on') }}
+          then:
+            - stop: Locked, or the door opened again.
