@@ -1,0 +1,10 @@
+# Add to configuration.yaml (or your existing input_boolean: block).
+# If you would rather use the UI: Settings > Devices & services > Helpers >
+# Create helper > Toggle, and name them so the entity IDs match below.
+input_boolean:
+  door_guest_mode:
+    name: Door Guest Mode
+    icon: mdi:account-clock
+  door_party_mode:
+    name: Door Party Mode
+    icon: mdi:party-popper
