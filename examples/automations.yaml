@@ -64,6 +64,8 @@
         - binary_sensor.bed_sensor_left_bed_occupancy
         - binary_sensor.bed_sensor_right_bed_occupancy
       night_mode: input_boolean.sleepmode
+      night_start: "21:00:00"
+      morning_time: "07:00:00"
       dim_light: light.masterbathceiling
       full_lights:
         - light.bathroom_lights

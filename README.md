@@ -89,9 +89,18 @@ that has not fired yet.
 
 So this stops waiting for the PIR. A bed occupancy sensor releases a second or
 two after you sit up - several seconds before you reach the bathroom door - and
-that is the head start. A bed emptying during night mode brings the light up
-very dim immediately, then waits for motion to confirm the guess. No motion, no
-harm: the light backs itself out.
+that is the head start. The bed going empty brings the light up immediately,
+then waits for motion to confirm the guess. No motion, no harm: the light backs
+itself out.
+
+The pre-light waits for the *last* person out. Lighting up while someone is
+still in bed just shines on the person you are trying not to wake, and they are
+not the one heading for the bathroom anyway.
+
+Brightness is decided once and used for both the pre-light and the motion that
+follows, so walking in never changes what you are already looking at. A 3am trip
+is dim; a morning get-up is already at full brightness before you reach the
+door.
 
 Works with any bed occupancy sensor that releases promptly (ESPHome load cells
 or pressure mats, Sleep Number, Withings, a mmWave sensor aimed at the bed).
@@ -100,11 +109,13 @@ or pressure mats, Sleep Number, Withings, a mmWave sensor aimed at the bed).
 
 | Situation | What happens |
 |---|---|
-| Bed empties during night mode | Dim pre-light immediately, before any motion |
-| Motion follows the pre-light | Steps up to night brightness, no flash |
+| Last person leaves the bed at 3am | Dim pre-light immediately, before any motion |
+| Last person leaves the bed at 7:30am | Full brightness pre-light - walk into a lit room |
+| One person up, partner still in bed | No pre-light, and the visit stays dim |
+| Motion follows the pre-light | Same brightness it was already at, no jump |
 | Pre-light guessed wrong | Switches itself back off after the confirm window |
 | Rolled over, both still in bed | Nothing - the sensor never released |
-| Motion, partner still in bed | Dim only, even with night mode off |
+| Night mode still on at 08:00 | Full brightness anyway, once the bed is empty |
 | Motion, bed empty, night mode off | Full brightness group |
 | Light already on when bed empties | Left alone - someone is using the room |
 | Motion returns during an off delay | Delay cancelled, lights stay up |
@@ -117,9 +128,11 @@ or pressure mats, Sleep Number, Withings, a mmWave sensor aimed at the bed).
 | Bathroom motion sensor | - | `binary_sensor`, occupancy or motion |
 | Bed occupancy sensors | - | One per side; any release starts a pre-light |
 | Night mode toggle | - | An `input_boolean` you flip at bedtime |
+| Night starts | 21:00 | Earliest night mode may dim the bathroom |
+| Night ends | 07:00 | After this, full brightness once the bed is empty |
 | Dim light | - | Single fixture used at night, and pre-lit |
 | Full brightness lights | - | Daytime group; a light group is fine |
-| Pre-light brightness | 8% | What a false positive costs you - keep it low |
+| Pre-light brightness | 8% | Night pre-light only; keep it low |
 | Confirmed night brightness | 20% | After motion backs up the guess |
 | Confirmation window | 90 s | How long a pre-light waits for motion |
 | Night off delay | 3 min | No-motion delay while night mode is on |
@@ -152,6 +165,13 @@ Everything here is one number, and the two worth touching are:
   debounce to the bed sensor also works, but it comes straight out of the head
   start the blueprint exists to buy, so it is the last resort rather than the
   first.
+- **Still dim when you are up for the day.** This is the one that bites, and it
+  is why the night window exists. A sleep-mode toggle is only ever as accurate
+  as your memory of switching it off, so "night mode is on" alone is not allowed
+  to decide anything - it has to agree with the clock. If you are brushing your
+  teeth at 20% at 08:00, night mode is stale and **Night ends** is the input to
+  move, not the brightness. Someone still in bed keeps the room dim regardless
+  of the hour, which is deliberate.
 - **Lights dying mid-shower.** Raise the extra daytime delay. A PIR cannot see
   through a shower curtain, and its own occupancy timeout usually burns most of
   the off delay before Home Assistant hears anything at all.
