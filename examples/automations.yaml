@@ -46,3 +46,42 @@
     - action: input_boolean.turn_off
       target:
         entity_id: input_boolean.door_party_mode
+
+# ---------------------------------------------------------------------------
+# Leak detection - alert, countdown, shut off the water
+#
+# One automation covers every leak sensor; the blueprint runs a separate
+# countdown per sensor. Needs the timer helpers from examples/helpers.yaml.
+- id: leak_shutoff_house_water
+  alias: "Leak: alert and shut off house water"
+  description: >-
+    Any leak sensor going wet alerts every phone and closes the water main
+    after 2 minutes unless somebody cancels.
+  use_blueprint:
+    path: ChuckBuilds/leak_shutoff.yaml
+    input:
+      leak_sensors:
+        - binary_sensor.kitchen_sink_water_leak
+        - binary_sensor.laundry_room_water_leak
+        - binary_sensor.water_heater_water_leak
+
+      # Turned OFF to close. Check which way your valve is modelled before
+      # trusting this - getting it backwards means it opens on a leak.
+      valve_switch: switch.water_main_shutoff_valve
+
+      # Full service names. A typo cannot stop the shutoff (every notify call
+      # is continue_on_error) but it does mean nobody gets told, so verify
+      # these with a test alert rather than assuming.
+      notify_services:
+        - notify.mobile_app_your_phone
+        - notify.mobile_app_partners_phone
+
+      grace_period:
+        hours: 0
+        minutes: 2
+        seconds: 0
+
+      snooze_duration:
+        hours: 0
+        minutes: 30
+        seconds: 0

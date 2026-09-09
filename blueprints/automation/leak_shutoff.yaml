@@ -1,0 +1,485 @@
+blueprint:
+  name: Leak detection - alert, countdown, shut off the water
+  description: >
+    Any one of a set of leak sensors going wet sends an actionable notification
+    to one or more phones and starts a countdown. If nobody answers before the
+    countdown expires, the water main is shut off automatically.
+
+
+    The countdown is the safety net, not the mechanism: the notification carries
+    a "Shut off now" button that closes the valve immediately, and a "Cancel"
+    button that leaves the water on. Not answering is the same as saying yes -
+    which is the right default for a leak, because the common failure mode at
+    3am is nobody hearing the phone at all.
+
+
+    * Every phone gets the same alert and any of them can answer. The first
+    answer wins and the notification is cleared from all the others, so two
+    people are not both deciding.
+
+    * "Cancel" snoozes that one sensor for a while, using a per-sensor timer
+    helper. Without it a sensor sitting in a puddle you are already mopping up
+    re-alerts every time it flaps wet/dry. Every other sensor stays armed.
+
+    * The valve is commanded off unconditionally rather than only when Home
+    Assistant believes it is open. A stale "off" in the state machine would
+    otherwise silently skip the one action that matters.
+
+    * The shutoff is verified. If the valve does not report closed, that is
+    itself an alert - a leak plus a valve that did not answer is strictly worse
+    than a leak, and it is the case you most need to know about.
+
+
+    Runs one instance per sensor in parallel, so a burst that wets several
+    sensors at once produces one countdown each rather than one that wins.
+
+
+    ---
+
+
+    SETUP - one manual step. Everything below works out of the box EXCEPT the
+    Cancel button's snooze, which needs one timer helper per leak sensor.
+    Blueprints cannot create helpers, so this part is on you.
+
+
+    For each sensor you select, create a timer helper named
+    `timer.leak_snooze_` + the sensor's object id:
+
+
+    `binary_sensor.kitchensink_water_leak`  ->  `timer.leak_snooze_kitchensink_water_leak`
+
+
+    Settings > Devices & Services > Helpers > Create helper > Timer, or in
+    YAML. Set them to restore on restart if you can.
+
+
+    Skipping this is safe but degraded: alerts still fire and the water is
+    still shut off, but Cancel will not stop the same sensor alerting again on
+    its next dry-to-wet edge. The automation says so in the cancel confirmation
+    and writes a warning to the log, so it will tell you - it just cannot fix
+    it for you.
+
+
+    REQUIREMENTS: a valve exposed as a `switch` that is turned OFF to close it
+    (Flo by Moen models it this way), and the Home Assistant Companion app on
+    each phone you notify. The actionable buttons work on iOS and Android;
+    `interruption-level` is iOS-only and is ignored elsewhere.
+
+  domain: automation
+  source_url: https://github.com/ChuckBuilds/ha-blueprints/blob/main/blueprints/automation/leak_shutoff.yaml
+
+  input:
+    detection:
+      name: Sensors and valve
+      icon: mdi:water-alert
+      input:
+        leak_sensors:
+          name: Leak sensors
+          description: >
+            The moisture sensors that arm this automation. Any one of them
+            going wet starts its own countdown.
+          selector:
+            entity:
+              multiple: true
+              filter:
+                - domain: binary_sensor
+                  device_class: moisture
+
+        valve_switch:
+          name: Water shutoff valve
+          description: >
+            The switch that controls the water main. It is turned OFF to close
+            the valve - that is how the Flo by Moen integration models it.
+          selector:
+            entity:
+              filter:
+                - domain: switch
+
+    alerting:
+      name: Notifications
+      icon: mdi:cellphone-message
+      input:
+        notify_services:
+          name: Notification services
+          description: >
+            Full service names, one per line, e.g. `notify.mobile_app_your_phone`.
+            Every one of them gets the alert and any of them can answer it.
+          selector:
+            text:
+              multiple: true
+
+        grace_period:
+          name: Countdown before shutoff
+          description: >
+            How long to wait for somebody to answer before closing the valve.
+            This is the whole safety margin - long enough to read a phone,
+            short enough that it still matters.
+          default:
+            hours: 0
+            minutes: 2
+            seconds: 0
+          selector:
+            duration:
+
+    cancelling:
+      # Deliberately NOT collapsed. This is the only section needing work
+      # outside this dialog, and hiding it is how somebody ends up with a
+      # Cancel button that quietly does half of what it says.
+      name: Cancel behaviour (needs helpers - please read)
+      icon: mdi:bell-sleep
+      input:
+        snooze_duration:
+          name: Snooze after Cancel
+          description: >
+            How long a cancelled sensor stays quiet before it can alert again.
+          default:
+            hours: 0
+            minutes: 30
+            seconds: 0
+          selector:
+            duration:
+
+        snooze_timer_prefix:
+          name: Snooze timer prefix
+          description: >
+            Snooze state lives in one timer helper per sensor, named
+            <prefix><sensor object id> - so `binary_sensor.kitchensink_water_leak`
+            uses `timer.leak_snooze_kitchensink_water_leak`.
+
+
+            A timer is used rather than a stored timestamp because it survives a
+            restart, counts down visibly in the UI, and can be cleared by hand.
+            Sensors with no matching timer simply never snooze, so a missing
+            helper degrades to "always alert" rather than breaking the run.
+          default: timer.leak_snooze_
+          selector:
+            text:
+
+    extras:
+      name: Extra actions
+      icon: mdi:playlist-plus
+      collapsed: true
+      input:
+        extra_shutoff_actions:
+          name: Extra actions on shutoff
+          description: >
+            Runs after the valve has been closed. Somewhere to hang a siren, a
+            light flash, or a message to a wall tablet.
+          default: []
+          selector:
+            action:
+
+# One run per wet sensor. Two sensors tripping together must not collapse into
+# a single countdown - they may be two different leaks, and the second one
+# still needs its own alert and its own answer.
+mode: parallel
+max: 25
+# `warning`, not `silent`. Hitting the cap means a sensor went wet and this
+# automation declined to run for it. One valve means the water still gets shut
+# off by whichever run is already counting down, so the cap is not dangerous -
+# but it does mean an alert naming that sensor was never sent, and that should
+# leave a trace in the log rather than vanishing.
+max_exceeded: warning
+
+triggers:
+  # `from: "off"` is load-bearing, not decoration. A bare `to: "on"` also
+  # matches unavailable -> on and unknown -> on, so a sensor that drops off the
+  # Zigbee mesh and rejoins wet - or a stuck sensor whose entity is re-added at
+  # startup - would arm a real countdown. Nobody is watching their phone during
+  # a Home Assistant update, so that countdown would run out and close the
+  # valve. Requiring a definite dry -> wet edge means only a sensor that was
+  # demonstrably dry a moment ago can start one.
+  #
+  # The cost: a sensor that goes unavailable while dry and returns already wet
+  # never alerts, because it never produces the off -> on edge. That is a real
+  # gap, accepted deliberately - it trades a rare missed alert for never
+  # shutting the water off on a restart artefact.
+  - trigger: state
+    entity_id: !input leak_sensors
+    from: "off"
+    to: "on"
+
+variables:
+  valve_switch: !input valve_switch
+  notify_services: !input notify_services
+  grace_period: !input grace_period
+  snooze_duration: !input snooze_duration
+  snooze_timer_prefix: !input snooze_timer_prefix
+
+  sensor: "{{ trigger.entity_id }}"
+  slug: "{{ trigger.entity_id.split('.')[1] }}"
+  snooze_timer: "{{ snooze_timer_prefix ~ slug }}"
+
+  # Notification action ids have to be unique per sensor, or a Cancel meant for
+  # the kitchen would also answer the countdown running for the laundry room.
+  act_now: "LEAK_SHUTOFF_NOW_{{ slug | upper }}"
+  act_cancel: "LEAK_CANCEL_{{ slug | upper }}"
+  # Shared tag so the same alert can be replaced and cleared on every phone.
+  tag: "leak_{{ slug }}"
+
+  # These sensors carry the device name (KitchenSink) while every entity is
+  # just called "Moisture", so the device name is the only readable label.
+  # The regex re-splits the CamelCase that zigbee2mqtt friendly names use.
+  sensor_label: >-
+    {%- set dn = device_attr(sensor, 'name_by_user')
+                 or device_attr(sensor, 'name') -%}
+    {%- if dn -%}
+      {# Backslashes doubled on purpose: Jinja parses '\1' in a string literal
+         as the control character 0x01, which silently eats the backreference
+         and turns "KitchenSink" into "Kitche ink". '\\1' reaches re.sub as \1. #}
+      {{ dn | regex_replace('([a-z0-9])([A-Z])', '\\1 \\2') }}
+    {%- else -%}
+      {{ state_attr(sensor, 'friendly_name') or sensor }}
+    {%- endif -%}
+
+  # Built without the %-I / %-d padding modifiers: those are a glibc extension
+  # and render as an error on a musl-based image. lstrip and .day get the same
+  # unpadded result everywhere.
+  detected_at: >-
+    {%- set t = trigger.to_state.last_changed | as_local -%}
+    {{ t.strftime('%I:%M:%S %p').lstrip('0') }}
+    on {{ t.strftime('%a %b') }} {{ t.day }}
+
+  grace_seconds: >-
+    {{ (grace_period.hours   | default(0)) * 3600
+     + (grace_period.minutes | default(0)) * 60
+     + (grace_period.seconds | default(0)) }}
+  grace_text: >-
+    {%- set s = grace_seconds | int(0) -%}
+    {%- if s >= 60 -%}
+      {{ (s // 60) }} minute{{ '' if (s // 60) == 1 else 's' }}
+      {{- ' %d seconds' % (s % 60) if s % 60 else '' }}
+    {%- else -%}
+      {{ s }} seconds
+    {%- endif -%}
+
+  snooze_text: >-
+    {%- set s = (snooze_duration.hours   | default(0)) * 3600
+              + (snooze_duration.minutes | default(0)) * 60
+              + (snooze_duration.seconds | default(0)) -%}
+    {%- if s >= 3600 -%}{{ (s / 3600) | round(1) }} hours
+    {%- elif s >= 60 -%}{{ s // 60 }} minutes
+    {%- else -%}{{ s }} seconds{%- endif -%}
+
+conditions:
+  # An unknown/unavailable timer (helper not created) is not 'active', so a
+  # sensor without a snooze helper always alerts. Fail loud, not silent.
+  - alias: This sensor is not snoozed
+    condition: template
+    value_template: "{{ states(snooze_timer) != 'active' }}"
+
+actions:
+  - alias: Alert every phone
+    repeat:
+      for_each: "{{ notify_services }}"
+      sequence:
+        - action: "{{ repeat.item }}"
+          # Notification delivery must never be able to stop the shutoff. A
+          # mistyped or removed notify service raises ServiceNotFound, which
+          # would otherwise abort this run on its first step - leaving the
+          # leak undetected-by-anyone AND the valve open.
+          continue_on_error: true
+          data:
+            title: "💧 Leak detected - {{ sensor_label }}"
+            message: >-
+              Water detected at {{ sensor_label }} at {{ detected_at }}.
+              House water shuts off in {{ grace_text }} unless you cancel.
+            data:
+              tag: "{{ tag }}"
+              group: leak
+              # To make this ring through Do Not Disturb and the silent switch,
+              # add here:  push: {sound: {name: default, critical: 1, volume: 1.0}}
+              # It also needs Critical Alerts allowed for the app in iOS settings.
+              actions:
+                - action: "{{ act_now }}"
+                  title: Shut off now
+                  destructive: true
+                - action: "{{ act_cancel }}"
+                  title: Cancel
+
+  - alias: Wait for any phone to answer
+    wait_for_trigger:
+      - trigger: event
+        event_type: mobile_app_notification_action
+        event_data:
+          action: "{{ act_now }}"
+      - trigger: event
+        event_type: mobile_app_notification_action
+        event_data:
+          action: "{{ act_cancel }}"
+    timeout: !input grace_period
+    continue_on_timeout: true
+
+  - alias: Remember how the countdown ended
+    # Captured immediately, because `wait` is replaced by the next wait_* step
+    # in the script. Reading wait.trigger after the valve's wait_template would
+    # find no `trigger` key at all, which in Jinja is Undefined rather than
+    # none - so `wait.trigger is not none` would be true on a timeout too, and
+    # every automatic shutoff would report itself as "on your command".
+    variables:
+      answer: >-
+        {{ wait.trigger.event.data.action if wait.trigger is not none else '' }}
+
+  - alias: Clear the alert from every phone
+    repeat:
+      for_each: "{{ notify_services }}"
+      sequence:
+        - action: "{{ repeat.item }}"
+          # Notification delivery must never be able to stop the shutoff. A
+          # mistyped or removed notify service raises ServiceNotFound, which
+          # would otherwise abort this run on its first step - leaving the
+          # leak undetected-by-anyone AND the valve open.
+          continue_on_error: true
+          data:
+            message: clear_notification
+            data:
+              tag: "{{ tag }}"
+
+  - choose:
+      # ---------------------------------------------------------- cancelled --
+      - alias: Somebody cancelled
+        conditions:
+          - condition: template
+            value_template: "{{ answer == act_cancel }}"
+        sequence:
+          - alias: Snooze this sensor if it has a timer
+            if:
+              - condition: template
+                value_template: >-
+                  {{ states(snooze_timer) not in ['unknown', 'unavailable'] }}
+            then:
+              - action: timer.start
+                target:
+                  entity_id: "{{ snooze_timer }}"
+                data:
+                  duration: !input snooze_duration
+            else:
+              # A missing timer is the one failure in here that is invisible
+              # from the UI: Cancel still stops the shutoff, so it looks like it
+              # worked, and then the sensor alerts again on its next edge with
+              # nothing to explain why. Blueprints cannot create helpers, so the
+              # best it can do is say so the moment it matters.
+              - action: system_log.write
+                data:
+                  level: warning
+                  logger: leak_shutoff
+                  message: >-
+                    Leak alert for {{ sensor }} was cancelled, but no snooze
+                    timer exists at "{{ snooze_timer }}" - this sensor will
+                    alert again on its next dry-to-wet edge. Create a timer
+                    helper with exactly that entity id to enable snoozing.
+
+          - alias: Confirm the water was left on
+            repeat:
+              for_each: "{{ notify_services }}"
+              sequence:
+                - action: "{{ repeat.item }}"
+                  # Notification delivery must never be able to stop the shutoff. A
+                  # mistyped or removed notify service raises ServiceNotFound, which
+                  # would otherwise abort this run on its first step - leaving the
+                  # leak undetected-by-anyone AND the valve open.
+                  continue_on_error: true
+                  data:
+                    title: "Leak alert cancelled - {{ sensor_label }}"
+                    # Says which of the two things actually happened rather
+                    # than promising a snooze that no helper can deliver.
+                    message: >-
+                      {%- if states(snooze_timer) not in ['unknown', 'unavailable'] -%}
+                        Water left on.
+                        {{ sensor_label }} stays quiet for {{ snooze_text }}.
+                      {%- else -%}
+                        Water left on. No snooze timer is set up for
+                        {{ sensor_label }}, so it can alert again straight away
+                        - add a timer helper called "{{ snooze_timer }}".
+                      {%- endif -%}
+                    data:
+                      tag: "{{ tag }}_result"
+                      group: leak
+
+    # ------------------------------------------------------------- shutoff --
+    # Covers both the timeout and an explicit "Shut off now". Everything that
+    # is not an affirmative cancel closes the valve.
+    default:
+      - alias: Note whether the water was already off
+        # Read before the command and used only to decide how loudly to report.
+        # It never gates the shutoff - see the comment on the next step. Worst
+        # case a stale "off" here downgrades one confirmation to a quiet one,
+        # which costs a buzz, not a closed valve.
+        variables:
+          valve_before: "{{ states(valve_switch) }}"
+
+      - alias: Close the shutoff valve
+        # Commanded unconditionally. Checking `is_state(valve, 'on')` first
+        # would skip the shutoff whenever the state machine is stale or the
+        # integration is mid-refresh, which is exactly when it is least safe
+        # to guess. Closing an already closed valve costs nothing.
+        action: switch.turn_off
+        target:
+          entity_id: "{{ valve_switch }}"
+
+      - alias: Wait for the valve to report closed
+        wait_template: "{{ is_state(valve_switch, 'off') }}"
+        timeout: "00:00:30"
+        continue_on_timeout: true
+
+      - alias: Work out what this run actually achieved
+        # Deliberately 'yes'/'no' strings rather than booleans. A template that
+        # renders to the word "False" is a non-empty string and therefore
+        # truthy, so `{% if confirmed %}` can quietly mean the opposite of what
+        # it reads like. An explicit comparison cannot.
+        variables:
+          confirmed: "{{ 'yes' if is_state(valve_switch, 'off') else 'no' }}"
+          # A run that found the water already off did not shut anything off -
+          # an earlier sensor did. It still has something to say (this sensor is
+          # wet too) but it should not claim the shutoff or buzz like it.
+          redundant: >-
+            {{ 'yes' if (valve_before == 'off' and is_state(valve_switch, 'off'))
+               else 'no' }}
+
+      - alias: Report what happened
+        repeat:
+          for_each: "{{ notify_services }}"
+          sequence:
+            - action: "{{ repeat.item }}"
+              # Notification delivery must never be able to stop the shutoff. A
+              # mistyped or removed notify service raises ServiceNotFound, which
+              # would otherwise abort this run on its first step - leaving the
+              # leak undetected-by-anyone AND the valve open.
+              continue_on_error: true
+              data:
+                title: >-
+                  {%- if confirmed == 'no' -%}⚠️ SHUTOFF DID NOT CONFIRM
+                  {%- elif redundant == 'yes' -%}💧 Also wet - {{ sensor_label }}
+                  {%- else -%}🚱 Water shut off{%- endif -%}
+                message: >-
+                  {%- if confirmed == 'no' -%}
+                    Leak at {{ sensor_label }} ({{ detected_at }}). The valve was
+                    commanded closed but is still reporting
+                    "{{ states(valve_switch) }}" after 30 seconds. Check the main
+                    manually.
+                  {%- elif redundant == 'yes' -%}
+                    {{ sensor_label }} went wet at {{ detected_at }}. The house
+                    water was already off, so nothing further was done.
+                  {%- else -%}
+                    House water closed after the leak at {{ sensor_label }}
+                    ({{ detected_at }}),
+                    {{ 'on your command' if answer == act_now
+                       else 'no answer within ' ~ grace_text }}.
+                  {%- endif -%}
+                data:
+                  # One shared tag for every shutoff result, so a burst that
+                  # wets six sensors leaves one updating banner instead of six
+                  # stacked ones. The per-sensor alerts above keep their own
+                  # tags - you still get told which sensors are wet, which is
+                  # the whole point of naming them.
+                  tag: leak_shutoff_result
+                  group: leak
+                  push:
+                    # The first shutoff is worth a buzz. The follow-ups saying
+                    # "this one is wet too, water already off" are not.
+                    interruption-level: >-
+                      {{ 'passive' if redundant == 'yes' else 'active' }}
+
+      - alias: Extra actions on shutoff
+        choose: []
+        default: !input extra_shutoff_actions
