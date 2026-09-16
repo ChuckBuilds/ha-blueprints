@@ -1,0 +1,269 @@
+# =============================================================================
+# Bed-aware sleep mode - a complete package
+#
+# Drop this in config/packages/sleep_mode.yaml, and make sure configuration.yaml
+# has:
+#
+#   homeassistant:
+#     packages: !include_dir_named packages
+#
+# Adjust every entity ID to match your own. This is a pattern, not a blueprint -
+# the shape is what matters, and the shape is: one toggle that is the single
+# source of truth, one automation that decides when it may flip, one automation
+# that reacts to it flipping, and one script that does the work.
+# =============================================================================
+
+input_boolean:
+  sleepmode:
+    name: SleepMode
+    icon: mdi:sleep
+
+# A unix timestamp rather than an input_datetime, deliberately: a fresh
+# input_datetime initialises to *today at midnight*, which reads as "somebody was
+# in bed a few hours ago" and quietly declares the sensors healthy on first run.
+# A fresh input_number starts at its minimum, and 0 is a timestamp no bed has
+# ever been occupied at. No `initial:` either - that would re-apply on every
+# restart and un-stamp a perfectly good sensor.
+input_number:
+  bed_last_occupied:
+    name: Bed last occupied
+    min: 0
+    max: 4102444800
+    step: 1
+    mode: box
+    unit_of_measurement: s
+
+template:
+  # Occupied unless BOTH sides are confidently reporting an empty bed.
+  # `unavailable`, `unknown` and anything else all count as occupied, because the
+  # cost of being wrong is asymmetric: a light that fails to come on is a light
+  # switch away, a light that comes on at 7am is two people awake.
+  - binary_sensor:
+      - name: Bed Occupied
+        unique_id: bed_occupied
+        device_class: occupancy
+        state: >
+          {{ ['binary_sensor.bed_sensor_left_bed_occupancy',
+              'binary_sensor.bed_sensor_right_bed_occupancy']
+             | map('states') | reject('eq', 'off') | list | count > 0 }}
+
+  # A bed sensor that has not seen a body in a day and a half is not reporting an
+  # empty bed, it is not reporting. Nothing may infer an empty bed from it.
+  # Contains now(), so it re-renders at the top of every minute.
+  - binary_sensor:
+      - name: Bed Sensors Trusted
+        unique_id: bed_sensors_trusted
+        device_class: problem
+        state: >
+          {% set last = states('input_number.bed_last_occupied') | float(0) %}
+          {{ last > 0 and (now().timestamp() - last) < 36 * 3600 }}
+
+script:
+  goodnight:
+    alias: Goodnight
+    description: >-
+      The house-to-bed steps. Called by "Sleep Mode: apply" when the toggle goes
+      on, and directly by the bedside buttons when sleep mode is already on - a
+      repeat press changes no state, so the apply automation never sees it.
+    mode: restart
+    sequence:
+      # Adaptive Lighting goes FIRST. This ordering is the whole point of the
+      # script and is not cosmetic - see the README. Flipping AL's sleep-mode
+      # switch makes it force-adapt every light it still believes is `on`, and
+      # light.turn_off on a group returns before the members have reported back.
+      # Turn the lights off first and AL re-lights them a second later at
+      # sleep_brightness. Set sleep mode, let AL settle, then go dark.
+      - action: switch.turn_on
+        target:
+          entity_id: switch.adaptive_lighting_sleep_mode_general_adaptive_lighting
+      - delay: "00:00:05"
+      - action: light.turn_off
+        target:
+          entity_id:
+            - light.indoorlightgroup
+            - light.patiolight
+      # Outdoor lights that stay on overnight, knocked down rather than killed.
+      - action: light.turn_on
+        target:
+          entity_id: light.porch_lights
+        data:
+          brightness_pct: 25
+
+automation:
+  # The stamp the trust test reads. Deliberately driven off the raw entities:
+  # this is the one place that wants to know what the hardware actually said.
+  - id: bed_occupancy_stamp
+    alias: 'Bed: stamp last occupied'
+    description: Records the last time either side of the bed actually detected
+      somebody, which is how binary_sensor.bed_sensors_trusted knows the sensors
+      are still alive.
+    mode: single
+    max_exceeded: silent
+    triggers:
+      - trigger: state
+        entity_id:
+          - binary_sensor.bed_sensor_left_bed_occupancy
+          - binary_sensor.bed_sensor_right_bed_occupancy
+        to: 'on'
+    conditions: []
+    actions:
+      - action: input_number.set_value
+        target:
+          entity_id: input_number.bed_last_occupied
+        data:
+          value: '{{ now().timestamp() | round(0) }}'
+
+  # DECIDER. Everything that is allowed to move the toggle, and the rules for
+  # when. Nothing in here touches a light except the daytime catch-all.
+  - id: sleep_mode_set
+    alias: 'Sleep Mode: set'
+    description: >-
+      Bedside buttons switch sleep mode on at night; a bed everybody has stayed
+      out of for ten minutes switches it off any time after 05:00. While sleep
+      mode is on a night press only puts the house back to bed, it never clears
+      sleep mode, so getting up briefly and coming back costs nothing. Will not
+      clear itself off a bed sensor that has stopped reporting - press either
+      bedside button between 07:00 and 20:00 to clear it by hand.
+    mode: queued
+    max: 5
+    triggers:
+      - trigger: mqtt
+        topic: zigbee2mqtt/BedsideButtonLeft/action
+        id: button
+      - trigger: mqtt
+        topic: zigbee2mqtt/BedsideButtonRight/action
+        id: button
+      # `for:` is a self-cancelling timer. Back in bed at minute eight and the
+      # countdown is thrown away - no trigger, nothing to reset.
+      - trigger: state
+        entity_id: binary_sensor.bed_occupied
+        from: 'on'
+        to: 'off'
+        for: 00:10:00
+        id: bed_empty
+      - trigger: time
+        at: 07:00:00
+        id: morning
+    conditions: []
+    actions:
+      - choose:
+          - conditions:
+              - condition: trigger
+                id: button
+              # Zigbee2MQTT clears the retained action topic with an empty
+              # payload; without this every restart reads as a button press.
+              - condition: template
+                value_template: >-
+                  {{ trigger.payload | default('', true) | trim
+                     not in ['', 'None', 'null'] }}
+            sequence:
+              # Order matters. `choose` is first-match-wins, so the narrow
+              # daytime clear has to come before the catch-all below it.
+              - choose:
+                  # Daytime press while asleep: clear it. This is the manual
+                  # escape hatch for when the bed sensors have died.
+                  - conditions:
+                      - condition: state
+                        entity_id: input_boolean.sleepmode
+                        state: 'on'
+                      - condition: time
+                        after: 07:00:00
+                        before: '20:00:00'
+                    sequence:
+                      - action: input_boolean.turn_off
+                        target:
+                          entity_id: input_boolean.sleepmode
+                  # Still on, so it is night or early morning: kill the lights
+                  # and leave sleep mode alone. Covers a repeat goodnight and
+                  # getting up at 05:30 and coming back to bed.
+                  - conditions:
+                      - condition: state
+                        entity_id: input_boolean.sleepmode
+                        state: 'on'
+                    sequence:
+                      - action: script.goodnight
+                  # Sleep mode is off and it is bedtime: this is a goodnight.
+                  - conditions:
+                      - condition: time
+                        after: '20:00:00'
+                        before: 06:00:00
+                    sequence:
+                      - action: input_boolean.turn_on
+                        target:
+                          entity_id: input_boolean.sleepmode
+                # Sleep mode off, daytime: a plain lights-off button.
+                default:
+                  - action: light.turn_off
+                    target:
+                      entity_id:
+                        - light.indoorlightgroup
+                        - light.patiolight
+          # Everybody out of bed and staying out. The main morning path.
+          - conditions:
+              - condition: trigger
+                id: bed_empty
+              - condition: state
+                entity_id: input_boolean.sleepmode
+                state: 'on'
+              - condition: time
+                after: '05:00:00'
+                before: '20:00:00'
+              - condition: state
+                entity_id: binary_sensor.bed_sensors_trusted
+                state: 'on'
+            sequence:
+              - action: input_boolean.turn_off
+                target:
+                  entity_id: input_boolean.sleepmode
+          # Backstop, for a night that ran past the wake window.
+          - conditions:
+              - condition: trigger
+                id: morning
+              - condition: state
+                entity_id: input_boolean.sleepmode
+                state: 'on'
+              - condition: state
+                entity_id: binary_sensor.bed_occupied
+                state: 'off'
+              - condition: state
+                entity_id: binary_sensor.bed_sensors_trusted
+                state: 'on'
+            sequence:
+              - action: input_boolean.turn_off
+                target:
+                  entity_id: input_boolean.sleepmode
+
+  # REACTOR. Watches the toggle, not the button, so voice, dashboard, bed
+  # sensors and a future automation all get the same house for free.
+  - id: sleep_mode_apply
+    alias: 'Sleep Mode: apply'
+    description: Puts the house to bed when sleep mode goes on, and releases
+      adaptive lighting when it goes off. Reacts to the toggle, so it works no
+      matter what set it - button, automation, dashboard or voice.
+    mode: restart
+    triggers:
+      - trigger: state
+        entity_id: input_boolean.sleepmode
+        from: 'off'
+        to: 'on'
+        id: sleep_on
+      - trigger: state
+        entity_id: input_boolean.sleepmode
+        from: 'on'
+        to: 'off'
+        id: sleep_off
+    conditions: []
+    actions:
+      - choose:
+          - conditions:
+              - condition: trigger
+                id: sleep_on
+            sequence:
+              - action: script.goodnight
+          - conditions:
+              - condition: trigger
+                id: sleep_off
+            sequence:
+              - action: switch.turn_off
+                target:
+                  entity_id: switch.adaptive_lighting_sleep_mode_general_adaptive_lighting
