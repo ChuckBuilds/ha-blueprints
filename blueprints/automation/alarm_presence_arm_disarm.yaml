@@ -1,0 +1,145 @@
+blueprint:
+  name: Alarm presence arm / disarm
+  description: >-
+    Arms the alarm panel when everyone has left, and (optionally) disarms it
+    when someone comes home.
+
+    Uses the person count of a zone (zone.home by default), so it works for
+    one person or a whole family.
+
+    Safety notes:
+      * Auto-disarm is OFF by default. If it is on, a stolen phone or a GPS
+        glitch can disarm your house. Turn it on only if you accept that.
+      * Auto-disarm never touches a panel that is already "triggered" - an
+        alarm in progress must be cancelled on purpose (button or keypad).
+  domain: automation
+  homeassistant:
+    min_version: 2024.10.0
+  input:
+    alarm_panel:
+      name: Alarm panel
+      selector:
+        entity:
+          filter:
+            - domain: alarm_control_panel
+    presence_zone:
+      name: Zone
+      description: Arms when this zone's person count drops to 0.
+      default: zone.home
+      selector:
+        entity:
+          filter:
+            - domain: zone
+    arm_action:
+      name: Arm as
+      default: alarm_control_panel.alarm_arm_away
+      selector:
+        select:
+          options:
+            - label: Away
+              value: alarm_control_panel.alarm_arm_away
+            - label: Vacation
+              value: alarm_control_panel.alarm_arm_vacation
+            - label: Night
+              value: alarm_control_panel.alarm_arm_night
+            - label: Home
+              value: alarm_control_panel.alarm_arm_home
+    arm_delay:
+      name: Arm after everyone has been gone for
+      default: 5
+      selector:
+        number:
+          min: 0
+          max: 120
+          unit_of_measurement: minutes
+          mode: box
+    auto_disarm:
+      name: Disarm when someone arrives
+      description: Read the safety note above first.
+      default: false
+      selector:
+        boolean:
+    panel_code:
+      name: Panel code
+      description: Only if your panel needs a code to arm / disarm. Leave empty otherwise.
+      default: ""
+      selector:
+        text:
+          type: password
+    notify_service:
+      name: Notify action
+      description: Optional, e.g. notify.mobile_app_your_phone. Empty = no push.
+      default: ""
+      selector:
+        text:
+
+mode: queued
+max: 5
+
+triggers:
+  - trigger: numeric_state
+    entity_id: !input presence_zone
+    below: 1
+    for:
+      minutes: !input arm_delay
+    id: left
+  - trigger: numeric_state
+    entity_id: !input presence_zone
+    above: 0
+    id: arrived
+
+variables:
+  alarm_panel: !input alarm_panel
+  arm_action: !input arm_action
+  auto_disarm: !input auto_disarm
+  panel_code: !input panel_code
+  notify_service: !input notify_service
+  code_data: "{{ {'code': panel_code} if panel_code else {} }}"
+
+actions:
+  - choose:
+      - conditions:
+          - condition: trigger
+            id: left
+          - condition: state
+            entity_id: !input alarm_panel
+            state: disarmed
+        sequence:
+          - action: "{{ arm_action }}"
+            target:
+              entity_id: "{{ alarm_panel }}"
+            data: "{{ code_data }}"
+          - action: logbook.log
+            data:
+              name: Alarm
+              message: "armed by presence - everyone left"
+          - if: "{{ notify_service != '' }}"
+            then:
+              - action: "{{ notify_service }}"
+                data:
+                  title: Alarm armed
+                  message: "Everyone left, alarm armed ({{ arm_action.split('_')[-1] }})."
+
+      - conditions:
+          - condition: trigger
+            id: arrived
+          - "{{ auto_disarm }}"
+          # Not "triggered": an alarm in progress is never auto-cancelled.
+          - condition: state
+            entity_id: !input alarm_panel
+            state: [armed_away, armed_home, armed_night, armed_vacation, armed_custom_bypass, arming, pending]
+        sequence:
+          - action: alarm_control_panel.alarm_disarm
+            target:
+              entity_id: "{{ alarm_panel }}"
+            data: "{{ code_data }}"
+          - action: logbook.log
+            data:
+              name: Alarm
+              message: "disarmed by presence - someone arrived"
+          - if: "{{ notify_service != '' }}"
+            then:
+              - action: "{{ notify_service }}"
+                data:
+                  title: Alarm disarmed
+                  message: "Someone arrived home, alarm disarmed."

@@ -1,0 +1,56 @@
+# Test the Noonlight webhook receiver without Noonlight.
+#
+# These post Noonlight-format webhook events to Home Assistant's own
+# /api/webhook/noonlight_dispatch_events endpoint - the same path real
+# Noonlight webhooks use - so the integration fires noonlight_webhook_received
+# and the status tracker reacts exactly as it would to the real thing.
+#
+# Add to configuration.yaml and restart, then put the three scripts on a
+# dashboard as buttons. Run a Local-mode alarm first so the alarm ID helper
+# has a value.
+#
+# If Home Assistant serves HTTPS directly (ssl_certificate in http:), change
+# the URL to https://127.0.0.1:8123/... and add  verify_ssl: false.
+
+rest_command:
+  noonlight_test_webhook:
+    url: http://127.0.0.1:8123/api/webhook/noonlight_dispatch_events
+    method: POST
+    content_type: application/json
+    payload: >-
+      [{
+        "event_id": "ha-test-{{ now().timestamp() | int }}",
+        "event_type": "{{ event_type }}",
+        "event_time": "{{ utcnow().isoformat() }}",
+        "meta": {
+          "alarm_id": "{{ states('input_text.noonlight_last_alarm_id') }}"
+          {%- if event_type == 'alarm.status.canceled' %},
+          "canceled_by": {"phone": "15555550100"}
+          {%- endif %}
+        }
+      }]
+
+script:
+  noonlight_test_webhook_psap:
+    alias: "Noonlight test webhook: 911 contacted"
+    icon: mdi:phone-in-talk
+    sequence:
+      - action: rest_command.noonlight_test_webhook
+        data:
+          event_type: alarm.psap_contacted
+
+  noonlight_test_webhook_canceled:
+    alias: "Noonlight test webhook: cancelled by phone"
+    icon: mdi:phone-cancel
+    sequence:
+      - action: rest_command.noonlight_test_webhook
+        data:
+          event_type: alarm.status.canceled
+
+  noonlight_test_webhook_closed:
+    alias: "Noonlight test webhook: closed by dispatcher"
+    icon: mdi:check-circle
+    sequence:
+      - action: rest_command.noonlight_test_webhook
+        data:
+          event_type: alarm.closed
