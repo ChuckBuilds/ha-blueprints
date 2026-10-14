@@ -27,6 +27,7 @@ blueprint:
 
     Requires the Noonlight Enhanced integration (KruseLuds/noonlight-hass).
   domain: automation
+  author: ChuckBuilds
   homeassistant:
     min_version: 2024.10.0
   input:

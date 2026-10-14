@@ -22,6 +22,7 @@ blueprint:
     Create ONE automation from this blueprint. It covers police, fire and
     medical.
   domain: automation
+  author: ChuckBuilds
   homeassistant:
     min_version: 2024.10.0
   input:

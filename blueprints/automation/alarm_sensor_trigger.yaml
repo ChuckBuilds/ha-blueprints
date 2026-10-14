@@ -15,6 +15,7 @@ blueprint:
     Optionally records which sensor tripped, so the Noonlight dispatch can
     tell the operator "Back door" instead of just "Alarm panel".
   domain: automation
+  author: ChuckBuilds
   homeassistant:
     min_version: 2024.10.0
   input:

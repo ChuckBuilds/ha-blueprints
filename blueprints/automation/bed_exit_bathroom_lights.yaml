@@ -29,6 +29,7 @@ blueprint:
     - including a morning get-up, where the lights are already up before you
     walk in.
   domain: automation
+  author: ChuckBuilds
   input:
     motion_sensor:
       name: Bathroom motion sensor
