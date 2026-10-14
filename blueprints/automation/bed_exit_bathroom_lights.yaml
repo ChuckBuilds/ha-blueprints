@@ -1,0 +1,353 @@
+blueprint:
+  name: Bed-exit predictive bathroom lights
+  description: >-
+    Motion-activated bathroom lighting that starts before the motion sensor
+    can possibly see you.
+
+    A PIR cannot report you until you are already in the room and inside its
+    field of view, and most battery PIRs then go blind for a cooldown period.
+    On a bathroom trip that is the whole problem: the light arrives after you
+    do, so you reach for the switch anyway. No amount of automation tuning
+    fixes it, because the automation was never the slow part - the sensor was.
+
+    So this does not wait for the PIR. A bed occupancy sensor releases within a
+    second or two of you sitting up, which is several seconds before you reach
+    the door. That is the head start. When the last person leaves the bed the
+    bathroom light comes up immediately, and then waits for the motion sensor
+    to confirm. If motion never arrives - you went downstairs instead - the
+    light backs itself out and nothing else happens.
+
+    The pre-light only fires once the bed is empty. Lighting up while someone
+    is still in it just shines on the person you are trying not to wake.
+
+    Brightness is decided the same way for the pre-light and for motion, so
+    walking in never changes what you are already looking at. It is dim if
+    anyone is still in bed, or if night mode is on AND the clock is actually
+    in the small hours. That second half matters: a sleep-mode toggle you
+    forget to switch off in the morning would otherwise keep you brushing your
+    teeth at 20% long after you got up. Any other time you get full brightness
+    - including a morning get-up, where the lights are already up before you
+    walk in.
+  domain: automation
+  input:
+    motion_sensor:
+      name: Bathroom motion sensor
+      description: The occupancy or motion sensor in the bathroom.
+      selector:
+        entity:
+          filter:
+            - domain: binary_sensor
+              device_class: occupancy
+            - domain: binary_sensor
+              device_class: motion
+
+    bed_sensors:
+      name: Bed occupancy sensors
+      description: >-
+        One entry per side of the bed. The pre-light fires when the last of
+        them releases; any of them still on keeps the bathroom dim.
+
+        These need to release quickly to be worth anything. If yours has a
+        delayed_off filter or a long debounce, shorten it - every second of
+        filtering is a second of head start you are giving away.
+      selector:
+        entity:
+          multiple: true
+          filter:
+            - domain: binary_sensor
+
+    night_mode:
+      name: Night mode toggle
+      description: >-
+        A sleep-mode input_boolean you flip at bedtime. Only taken seriously
+        between the two times below, so forgetting to switch it off in the
+        morning does not leave you in the dark.
+      selector:
+        entity:
+          filter:
+            - domain: input_boolean
+
+    night_start:
+      name: Night starts
+      description: >-
+        Earliest time night mode is allowed to dim the bathroom.
+      default: "21:00:00"
+      selector:
+        time:
+
+    morning_time:
+      name: Night ends
+      description: >-
+        After this time you get full brightness once everyone is out of bed,
+        even if night mode is still switched on. Set it to when you actually
+        get up, not when you would like to.
+      default: "07:00:00"
+      selector:
+        time:
+
+    dim_light:
+      name: Dim light
+      description: >-
+        The single light used for night trips - usually an overhead or ceiling
+        fixture rather than vanity lights.
+      selector:
+        entity:
+          filter:
+            - domain: light
+
+    full_lights:
+      name: Full brightness lights
+      description: >-
+        Everything to switch on for a normal visit. A light group is fine.
+        These are also switched off at the end of every visit, along with the
+        dim light, so it does not matter whether the dim light is a member of
+        this group.
+      selector:
+        entity:
+          multiple: true
+          filter:
+            - domain: light
+
+    prelight_pct:
+      name: Pre-light brightness
+      description: >-
+        Brightness for a night-time pre-light, before motion has confirmed
+        anything. Keep this low - it is what a false positive costs you, and it
+        should be barely visible from the bedroom. Only used when the visit is
+        going to be a dim one; a daytime pre-light goes straight to the full
+        lights.
+      default: 8
+      selector:
+        number:
+          min: 1
+          max: 100
+          step: 1
+          unit_of_measurement: "%"
+          mode: slider
+
+    dim_pct:
+      name: Confirmed night brightness
+      description: >-
+        Brightness once motion confirms you are really in the bathroom, on a
+        visit that stays dim.
+      default: 20
+      selector:
+        number:
+          min: 1
+          max: 100
+          step: 1
+          unit_of_measurement: "%"
+          mode: slider
+
+    confirm_window:
+      name: Confirmation window
+      description: >-
+        How long a pre-light waits for motion before deciding it guessed wrong
+        and switching itself back off.
+      default: 90
+      selector:
+        number:
+          min: 10
+          max: 600
+          step: 5
+          unit_of_measurement: seconds
+          mode: box
+
+    night_off_delay:
+      name: Night off delay
+      description: >-
+        Minutes of no motion before the lights go out on a dim visit. Short is
+        good here - night trips are short.
+      default: 3
+      selector:
+        number:
+          min: 0.5
+          max: 60
+          step: 0.5
+          unit_of_measurement: minutes
+          mode: box
+
+    day_grace:
+      name: Extra daytime delay
+      description: >-
+        Added on top of the night off delay on a full-brightness visit. Showers
+        are the reason this exists: a PIR cannot see through a curtain, and its
+        own occupancy timeout has usually already burned most of the off delay
+        before Home Assistant even hears about it. If your lights die on you
+        mid-shower, raise this.
+      default: 5
+      selector:
+        number:
+          min: 0
+          max: 60
+          step: 0.5
+          unit_of_measurement: minutes
+          mode: box
+
+# Every trigger cancels the run in flight. That is load-bearing in three
+# places: returning motion cancels a pending off-delay, confirming motion
+# cancels the pre-light's back-out timer, and the second person getting up
+# does not queue a duplicate pre-light. Do not change this to single or queued.
+mode: restart
+max_exceeded: silent
+
+variables:
+  bed_sensors: !input bed_sensors
+  night_mode: !input night_mode
+  night_start: !input night_start
+  morning_time: !input morning_time
+
+  anyone_in_bed: >-
+    {{ expand(bed_sensors) | selectattr('state', 'eq', 'on') | list | count > 0 }}
+
+  # True only during the small hours. Written to survive the window wrapping
+  # past midnight, which is the normal case for a 21:00 -> 07:00 night.
+  in_night_window: >-
+    {% set n = now() %}
+    {% set start = today_at(night_start) %}
+    {% set end = today_at(morning_time) %}
+    {{ (n >= start or n < end) if start > end else (start <= n and n < end) }}
+
+  # The single brightness decision, used by both the pre-light and motion, so
+  # walking in never changes what you are already looking at.
+  #
+  # Night mode alone is deliberately NOT enough. A sleep-mode toggle that is
+  # still on at 08:00 because nobody flipped it is the common case, and it
+  # should not be what decides you brush your teeth in the dark.
+  should_dim: >-
+    {{ anyone_in_bed or (is_state(night_mode, 'on') and in_night_window) }}
+
+triggers:
+  # The head start. Fires the moment a side of the bed is released; the branch
+  # below drops it unless that was the last person out.
+  - trigger: state
+    entity_id: !input bed_sensors
+    from: "on"
+    to: "off"
+    id: bed_exit
+
+  # The PIR finally catching up - or someone arriving from elsewhere.
+  - trigger: state
+    entity_id: !input motion_sensor
+    from: "off"
+    to: "on"
+    id: motion_on
+
+  # Visit over.
+  - trigger: state
+    entity_id: !input motion_sensor
+    to: "off"
+    for:
+      minutes: !input night_off_delay
+    id: motion_off
+
+conditions: []
+
+actions:
+  - choose:
+
+      # ---- Speculative: the bed just emptied -------------------------------
+      - conditions:
+          - condition: trigger
+            id: bed_exit
+          # Only once the LAST person is out. Pre-lighting while someone is
+          # still in bed just shines on the person you are trying not to wake,
+          # and they are not the one heading for the bathroom anyway.
+          - condition: template
+            value_template: "{{ not anyone_in_bed }}"
+          # Never hijack lights that are already on - someone is using the room
+          # and owns them.
+          - condition: state
+            entity_id: !input dim_light
+            state: "off"
+          - condition: state
+            entity_id: !input full_lights
+            state: "off"
+        sequence:
+          - if:
+              - condition: template
+                value_template: "{{ should_dim }}"
+            then:
+              - action: light.turn_on
+                target:
+                  entity_id: !input dim_light
+                data:
+                  brightness_pct: !input prelight_pct
+                  transition: 2
+            else:
+              # Getting up for the day. Go straight to the brightness the visit
+              # is going to use, so you walk into a lit bathroom rather than
+              # watching it come up around you.
+              - action: light.turn_on
+                target:
+                  entity_id: !input full_lights
+
+          # Wait for the PIR to back up the guess. If motion does arrive, the
+          # motion_on trigger restarts this automation and cancels this run
+          # outright - the branch below takes over. So in practice the only way
+          # past this wait is a timeout.
+          - wait_for_trigger:
+              - trigger: state
+                entity_id: !input motion_sensor
+                to: "on"
+            timeout:
+              seconds: !input confirm_window
+            continue_on_timeout: true
+
+          - if:
+              - condition: template
+                value_template: "{{ wait.trigger is none }}"
+            then:
+              # Wrong guess - nobody came. Undo it and leave no state behind.
+              # Both, because either could have been the one lit above.
+              - action: light.turn_off
+                target:
+                  entity_id: !input dim_light
+                data:
+                  transition: 2
+              - action: light.turn_off
+                target:
+                  entity_id: !input full_lights
+
+      # ---- Confirmed: someone is in the bathroom ---------------------------
+      - conditions:
+          - condition: trigger
+            id: motion_on
+        sequence:
+          - if:
+              - condition: template
+                value_template: "{{ should_dim }}"
+            then:
+              # Same fixture the pre-light used, so confirming a pre-lit night
+              # trip reads as a gentle step up rather than a flash.
+              - action: light.turn_on
+                target:
+                  entity_id: !input dim_light
+                data:
+                  brightness_pct: !input dim_pct
+                  transition: 1
+            else:
+              - action: light.turn_on
+                target:
+                  entity_id: !input full_lights
+
+      # ---- Quiet long enough: clear up -------------------------------------
+      - conditions:
+          - condition: trigger
+            id: motion_off
+        sequence:
+          - if:
+              - condition: template
+                value_template: "{{ not should_dim }}"
+            then:
+              # Cancelled outright if motion returns, because mode is restart.
+              - delay:
+                  minutes: !input day_grace
+          # Both, unconditionally. The dim light may or may not be a member of
+          # the full group, and turning off an already-off light costs nothing.
+          - action: light.turn_off
+            target:
+              entity_id: !input full_lights
+          - action: light.turn_off
+            target:
+              entity_id: !input dim_light
