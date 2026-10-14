@@ -25,19 +25,40 @@ blueprint:
   homeassistant:
     min_version: 2024.10.0
   input:
-    notify_service:
-      name: Notify action
+    notify_devices:
+      name: Phones to notify
       description: >-
-        Who gets alarm status pushes, e.g. notify.mobile_app_your_phone or a
-        notify group. Use the same one as your dispatch automations.
+        Phones with the Home Assistant Companion app that get every status
+        push. Use the same phones as your dispatch automations.
+      default: []
+      selector:
+        device:
+          multiple: true
+          filter:
+            - integration: mobile_app
+    notify_service:
+      name: Other notify action (optional)
+      description: >-
+        Also send to a notify action that is not a phone above, e.g. a notify
+        group like notify.family_phones. Leave empty if not needed.
+      default: ""
       selector:
         text:
-    household_notify_service:
-      name: Household notify action
+    household_devices:
+      name: Household phones (optional)
       description: >-
-        Optional. Everyone else who should know an alarm went out, failed, or
-        was cancelled (people who may get Noonlight's calls / texts). Leave
-        empty to skip.
+        Everyone else who should know an alarm went out, failed, or was
+        cancelled (people who may get Noonlight's calls / texts). Short,
+        non-critical pushes.
+      default: []
+      selector:
+        device:
+          multiple: true
+          filter:
+            - integration: mobile_app
+    household_notify_service:
+      name: Household notify action (optional)
+      description: A notify action or group for the household, if not phones above.
       default: ""
       selector:
         text:
@@ -119,8 +140,26 @@ conditions:
          or (trigger.event.data.action | default('')).startswith('NOONLIGHT_CANCEL_') }}
 
 variables:
+  notify_devices: !input notify_devices
   notify_service: !input notify_service
+  household_devices: !input household_devices
   household_notify_service: !input household_notify_service
+  # Each Companion app phone has a notify action named after the phone:
+  # notify.mobile_app_<phone name>.
+  notify_targets: >-
+    {% set ns = namespace(targets=[]) %}
+    {% for device in notify_devices if device_attr(device, 'name') %}
+      {% set ns.targets = ns.targets + ['notify.mobile_app_' ~ (device_attr(device, 'name') | slugify)] %}
+    {% endfor %}
+    {% if notify_service %}{% set ns.targets = ns.targets + [notify_service] %}{% endif %}
+    {{ ns.targets }}
+  household_targets: >-
+    {% set ns = namespace(targets=[]) %}
+    {% for device in household_devices if device_attr(device, 'name') %}
+      {% set ns.targets = ns.targets + ['notify.mobile_app_' ~ (device_attr(device, 'name') | slugify)] %}
+    {% endfor %}
+    {% if household_notify_service %}{% set ns.targets = ns.targets + [household_notify_service] %}{% endif %}
+    {{ ns.targets }}
   alarm_id_helper: !input alarm_id_helper
   cancel_service_available: !input cancel_service_available
   result_timeout: !input result_timeout
@@ -175,14 +214,18 @@ actions:
                 data:
                   name: Noonlight
                   message: "no result {{ result_timeout }} s after the dispatch request."
-              - action: "{{ notify_service }}"
-                data:
-                  title: "Noonlight: no response"
-                  message: >-
-                    {{ d.mode }} {{ d.service | title }} alarm requested {{ result_timeout }} s ago
-                    and no result came back. It may NOT be active. Call 911 yourself
-                    if this is real. Check the Noonlight integration and HA logs.
-                  data: "{{ critical }}"
+              - repeat:
+                  for_each: "{{ notify_targets }}"
+                  sequence:
+                    - action: "{{ repeat.item }}"
+                      continue_on_error: true
+                      data:
+                        title: "Noonlight: no response"
+                        message: >-
+                          {{ d.mode }} {{ d.service | title }} alarm requested {{ result_timeout }} s ago
+                          and no result came back. It may NOT be active. Call 911 yourself
+                          if this is real. Check the Noonlight integration and HA logs.
+                        data: "{{ critical }}"
 
       # ---- created: alarm is active ------------------------------------
       - conditions: "{{ trigger.id == 'created' }}"
@@ -200,28 +243,37 @@ actions:
             data:
               name: Noonlight
               message: "{{ env_label }} {{ what }} alarm ACTIVE, id {{ d.alarm_id }}"
-          - action: "{{ notify_service }}"
-            data:
-              title: "Noonlight {{ env_label }} {{ what }} alarm ACTIVE"
-              message: >-
-                {{ d.alarm_cause }}. Noonlight is contacting you now.
-                {% if not can_cancel %}To cancel: answer Noonlight's call or text and give your PIN.{% endif %}
-                ID {{ d.alarm_id }}
-              data:
-                tag: "{{ 'noonlight_' ~ d.alarm_id }}"
-                push: "{{ critical.push }}"
-                ttl: 0
-                priority: high
-                channel: alarm_stream
-                actions: >-
-                  {{ [{'action': 'NOONLIGHT_CANCEL_' ~ d.alarm_id, 'title': 'Cancel Noonlight alarm'}]
-                     if can_cancel else [] }}
-          - if: "{{ household_notify_service != '' }}"
-            then:
-              - action: "{{ household_notify_service }}"
-                data:
-                  title: "Noonlight {{ env_label }} {{ what }} alarm ACTIVE"
-                  message: "{{ d.alarm_cause }}. Expect a call or text from Noonlight."
+          # You and the household are sent separately: a bad target in one
+          # list can't stop the other.
+          - parallel:
+              - repeat:
+                  for_each: "{{ notify_targets }}"
+                  sequence:
+                    - action: "{{ repeat.item }}"
+                      continue_on_error: true
+                      data:
+                        title: "Noonlight {{ env_label }} {{ what }} alarm ACTIVE"
+                        message: >-
+                          {{ d.alarm_cause }}. Noonlight is contacting you now.
+                          {% if not can_cancel %}To cancel: answer Noonlight's call or text and give your PIN.{% endif %}
+                          ID {{ d.alarm_id }}
+                        data:
+                          tag: "{{ 'noonlight_' ~ d.alarm_id }}"
+                          push: "{{ critical.push }}"
+                          ttl: 0
+                          priority: high
+                          channel: alarm_stream
+                          actions: >-
+                            {{ [{'action': 'NOONLIGHT_CANCEL_' ~ d.alarm_id, 'title': 'Cancel Noonlight alarm'}]
+                               if can_cancel else [] }}
+              - repeat:
+                  for_each: "{{ household_targets }}"
+                  sequence:
+                    - action: "{{ repeat.item }}"
+                      continue_on_error: true
+                      data:
+                        title: "Noonlight {{ env_label }} {{ what }} alarm ACTIVE"
+                        message: "{{ d.alarm_cause }}. Expect a call or text from Noonlight."
 
       # ---- failed: Noonlight was NOT reached ----------------------------
       - conditions: "{{ trigger.id == 'failed' }}"
@@ -237,17 +289,24 @@ actions:
             data:
               name: Noonlight
               message: "{{ headline }} ({{ env_label }}): {{ d.error }}"
-          - action: "{{ notify_service }}"
-            data:
-              title: "{{ headline }}"
-              message: "{{ advice }} Error: {{ d.error }}"
-              data: "{{ critical }}"
-          - if: "{{ household_notify_service != '' }}"
-            then:
-              - action: "{{ household_notify_service }}"
-                data:
-                  title: "{{ headline }}"
-                  message: "{{ advice }}"
+          - parallel:
+              - repeat:
+                  for_each: "{{ notify_targets }}"
+                  sequence:
+                    - action: "{{ repeat.item }}"
+                      continue_on_error: true
+                      data:
+                        title: "{{ headline }}"
+                        message: "{{ advice }} Error: {{ d.error }}"
+                        data: "{{ critical }}"
+              - repeat:
+                  for_each: "{{ household_targets }}"
+                  sequence:
+                    - action: "{{ repeat.item }}"
+                      continue_on_error: true
+                      data:
+                        title: "{{ headline }}"
+                        message: "{{ advice }}"
 
       # ---- canceled ------------------------------------------------------
       - conditions: "{{ trigger.id == 'canceled' }}"
@@ -256,18 +315,25 @@ actions:
             data:
               name: Noonlight
               message: "{{ env_label }} alarm {{ d.alarm_id }} CANCELLED from Home Assistant"
-          - action: "{{ notify_service }}"
-            data:
-              title: "Noonlight alarm cancelled"
-              message: "Alarm {{ d.alarm_id }} ({{ env_label }}) was cancelled."
-              data:
-                tag: "{{ 'noonlight_' ~ d.alarm_id }}"
-          - if: "{{ household_notify_service != '' }}"
-            then:
-              - action: "{{ household_notify_service }}"
-                data:
-                  title: "Noonlight alarm cancelled"
-                  message: "False alarm, cancelled from Home Assistant."
+          - parallel:
+              - repeat:
+                  for_each: "{{ notify_targets }}"
+                  sequence:
+                    - action: "{{ repeat.item }}"
+                      continue_on_error: true
+                      data:
+                        title: "Noonlight alarm cancelled"
+                        message: "Alarm {{ d.alarm_id }} ({{ env_label }}) was cancelled."
+                        data:
+                          tag: "{{ 'noonlight_' ~ d.alarm_id }}"
+              - repeat:
+                  for_each: "{{ household_targets }}"
+                  sequence:
+                    - action: "{{ repeat.item }}"
+                      continue_on_error: true
+                      data:
+                        title: "Noonlight alarm cancelled"
+                        message: "False alarm, cancelled from Home Assistant."
 
       # ---- cancel button on the "ACTIVE" push ----------------------------
       - conditions: "{{ trigger.id == 'cancel_button' }}"
@@ -315,12 +381,16 @@ actions:
                     message: "webhook: {{ text | trim }} (alarm {{ hook_alarm_id }})"
                 - if: "{{ push_webhooks }}"
                   then:
-                    - action: "{{ notify_service }}"
-                      data:
-                        title: Noonlight update
-                        message: "{{ text | trim }}"
-                        data:
-                          tag: "{{ 'noonlight_' ~ hook_alarm_id }}"
+                    - repeat:
+                        for_each: "{{ notify_targets }}"
+                        sequence:
+                          - action: "{{ repeat.item }}"
+                            continue_on_error: true
+                            data:
+                              title: Noonlight update
+                              message: "{{ text | trim }}"
+                              data:
+                                tag: "{{ 'noonlight_' ~ hook_alarm_id }}"
 
   - if: "{{ status_card and trigger.id != 'cancel_button' }}"
     then:

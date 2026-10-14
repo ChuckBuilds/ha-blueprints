@@ -304,6 +304,7 @@ Read the whole story afterwards in **Logbook**, search `Noonlight`.
 | Test mode without a sandbox token | Integration refuses, tracker sends "FAILED" |
 | Live mode | Production endpoint forced, sandbox token never sent |
 | Cancel buttons fail to register | Countdown still runs in full; disarm still cancels |
+| A phone was renamed, a notify action is wrong, or your siren errors | Only that push / action fails; the countdown and dispatch still run |
 
 ### Inputs
 
@@ -316,9 +317,13 @@ Read the whole story afterwards in **Logbook**, search `Noonlight`.
 | Mode helper | - | `input_select` with Off / Local / Test / Live |
 | Sandbox server token | - | Test mode only. In YAML: `!secret noonlight_sandbox_token` |
 | Dispatcher instructions | - | Gate codes, pets, who lives here. The alarm cause goes in front |
-| Notify action | - | e.g. `notify.mobile_app_your_phone` or a notify group |
+| Phones to notify | - | Pick Companion app phones; each gets the critical countdown push |
+| Other notify action | - | Optional, e.g. a notify group like `notify.family_phones` |
 | Countdown | 60 s | On top of the panel's entry delay. 30 s is reasonable for Fire |
-| When the countdown starts | - | Your actions: siren, lights, TTS warning |
+| Camera | - | Optional. Snapshot in the push; long-press on iPhone for the live feed |
+| Open when tapped | - | Optional dashboard path, e.g. `/lovelace/security` |
+| Extra message line | - | Optional. Templates work: `Front door lock: {{ states('lock.front_door') }}` |
+| When the countdown starts | - | Your actions: siren, lights, TTS warning. Run alongside the countdown |
 | When cancelled before dispatch | - | Your actions: siren off |
 | When handed to Noonlight | - | Your actions: lights on, unlock for responders |
 
@@ -429,8 +434,9 @@ off on a restart artefact.
 
 | Input | Default | Notes |
 |---|---|---|
-| Notify action | - | Same as your dispatch automations |
-| Household notify action | - | Optional. Everyone who may get Noonlight's calls |
+| Phones to notify | - | Same phones as your dispatch automations |
+| Other notify action | - | Optional, e.g. a notify group |
+| Household phones / notify action | - | Optional. Everyone who may get Noonlight's calls |
 | Last alarm ID helper | - | Optional `input_text` |
 | Integration has `noonlight.cancel_alarm` | Off | See [Cancelling](#cancelling-an-alarm). Leave off unless your integration has it |
 | Result timeout | 45 s | How long to wait for Noonlight before warning |
@@ -529,7 +535,7 @@ cancel. Put your real instructions back. Leave mode on Live.
 
 `tests/runtime_test.py` runs all four blueprints inside a headless Home
 Assistant with recorded (fake) notify, Noonlight and panel actions and plays
-through 37 scenarios. Needs `pip install homeassistant`; takes about 2.5
+through 44 scenarios. Needs `pip install homeassistant`; takes about 2.5
 minutes and exits non-zero on any failure.
 
 ## Disclaimer

@@ -1,6 +1,8 @@
 # Example wiring for the Noonlight + alarm blueprints.
 # Same as creating them in the UI from the imported blueprints. Adjust entity
-# IDs and notify actions to yours.
+# IDs and notify actions to yours. In the UI you can pick phones (notify_devices)
+# instead of typing notify_service; YAML device IDs are hard to read, so the
+# examples use notify_service.
 
 # Sensors trip the panel. Perimeter doors count in every armed mode.
 - id: alarm_trip_perimeter

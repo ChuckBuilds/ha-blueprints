@@ -112,11 +112,23 @@ blueprint:
     notify_section:
       name: Notifications and timing
       input:
-        notify_service:
-          name: Notify action
+        notify_devices:
+          name: Phones to notify
           description: >-
-            Who gets the countdown push. A mobile app or notify group, e.g.
-            notify.mobile_app_your_phone or notify.family_phones.
+            Phones with the Home Assistant Companion app. Each gets the
+            critical countdown push with the Cancel / Dispatch now buttons.
+          default: []
+          selector:
+            device:
+              multiple: true
+              filter:
+                - integration: mobile_app
+        notify_service:
+          name: Other notify action (optional)
+          description: >-
+            Also send to a notify action that is not a phone above, e.g. a
+            notify group like notify.family_phones. Leave empty if not needed.
+          default: ""
           selector:
             text:
         countdown:
@@ -132,13 +144,46 @@ blueprint:
               step: 5
               unit_of_measurement: seconds
               mode: box
+    push_section:
+      name: Customize the countdown push (optional)
+      collapsed: true
+      input:
+        camera:
+          name: Camera
+          description: >-
+            Shows a snapshot in the push. Long-press it on iPhone for the live
+            feed.
+          default: []
+          selector:
+            entity:
+              filter:
+                - domain: camera
+        tap_url:
+          name: Open when tapped
+          description: >-
+            Dashboard path the push opens, e.g. /lovelace/security. Leave empty
+            to open the app normally.
+          default: ""
+          selector:
+            text:
+        extra_message:
+          name: Extra message line
+          description: >-
+            Added under the alarm text. Templates work, e.g.
+            Front door lock: {{ states('lock.front_door') }}
+          default: ""
+          selector:
+            text:
+              multiline: true
     custom_section:
       name: Your extra actions (optional)
       collapsed: true
       input:
         on_triggered_actions:
           name: When the countdown starts
-          description: Sirens, lights, TTS warning, cameras...
+          description: >-
+            Sirens, lights, TTS warning... Runs alongside the countdown, so a
+            failing device can't stop the dispatch.
           default: []
           selector:
             action: {}
@@ -174,8 +219,12 @@ variables:
   alarm_panel: !input alarm_panel
   last_trigger_helper: !input last_trigger_helper
   instructions: !input instructions
+  notify_devices: !input notify_devices
   notify_service: !input notify_service
   countdown: !input countdown
+  camera: !input camera
+  tap_url: !input tap_url
+  extra_message: !input extra_message
   service_name: "{{ service | title }}"
   nl_mode: "{{ states(mode_helper) }}"
   # Panel triggers say which sensor tripped it, when the sensor blueprint
@@ -190,6 +239,34 @@ variables:
     {% endif %}
   alarm_cause: "{{ service_name }} alarm: {{ cause_source | trim }}"
   push_tag: "{{ 'noonlight_' ~ service }}"
+  # Each Companion app phone has a notify action named after the phone:
+  # notify.mobile_app_<phone name>. Phones first, the optional extra action last.
+  notify_targets: >-
+    {% set ns = namespace(targets=[]) %}
+    {% for device in notify_devices if device_attr(device, 'name') %}
+      {% set ns.targets = ns.targets + ['notify.mobile_app_' ~ (device_attr(device, 'name') | slugify)] %}
+    {% endfor %}
+    {% if notify_service %}{% set ns.targets = ns.targets + [notify_service] %}{% endif %}
+    {{ ns.targets }}
+  # iOS critical alert + Android alarm channel: rings through silent mode.
+  critical_data:
+    push:
+      interruption-level: critical
+      sound:
+        name: default
+        critical: 1
+        volume: 1.0
+    ttl: 0
+    priority: high
+    channel: alarm_stream
+  # Optional camera snapshot (iOS live feed on long-press) and tap target.
+  push_media: >-
+    {% set media = {} %}
+    {% if camera is string and camera %}
+      {% set media = dict(media, image='/api/camera_proxy/' ~ camera, entity_id=camera) %}
+    {% endif %}
+    {% if tap_url %}{% set media = dict(media, url=tap_url, clickAction=tap_url) %}{% endif %}
+    {{ media }}
 
 actions:
   # Unique per run so buttons from an old notification can't act on this one.
@@ -201,196 +278,204 @@ actions:
   - action: logbook.log
     data:
       name: "Noonlight {{ service_name }}"
-      message: "triggered by {{ cause_source | trim }}. Mode {{ nl_mode }}. Countdown {{ countdown }} s."
-
-  - choose: []
-    default: !input on_triggered_actions
-
-  # ---- 1. Countdown push ------------------------------------------------
-  - action: "{{ notify_service }}"
-    data:
-      title: "{{ service_name }} alarm - {{ nl_mode }} mode"
       message: >-
-        {{ cause_source | trim }}.
-        {% if nl_mode == 'Live' %}Calling Noonlight in {{ countdown }} s.
-        {% elif nl_mode == 'Test' %}Calling Noonlight SANDBOX in {{ countdown }} s.
-        {% elif nl_mode == 'Local' %}Simulating a dispatch in {{ countdown }} s.
-        {% else %}Dry run ({{ nl_mode }}) - Noonlight will not be called.{% endif %}
-      data:
-        tag: "{{ push_tag }}"
-        # iOS
-        push:
-          interruption-level: critical
-          sound:
-            name: default
-            critical: 1
-            volume: 1.0
-        # Android
-        ttl: 0
-        priority: high
-        channel: alarm_stream
-        actions:
-          - action: "{{ action_cancel }}"
-            title: "Cancel - I'm safe"
-          - action: "{{ action_dispatch }}"
-            title: "Dispatch now"
+        triggered by {{ cause_source | trim }}. Mode {{ nl_mode }}. Countdown {{ countdown }} s.
+        {% if not notify_targets %}WARNING: no phones or notify action set, nobody gets a push.{% endif %}
 
-  # ---- 2. Wait for cancel / disarm / dispatch-now / timeout ---------------
-  - wait_for_trigger:
-      - trigger: event
-        event_type: mobile_app_notification_action
-        event_data:
-          action: "{{ action_cancel }}"
-        id: cancel
-      - trigger: event
-        event_type: mobile_app_notification_action
-        event_data:
-          action: "{{ action_dispatch }}"
-        id: dispatch_now
-      - trigger: state
-        entity_id: !input alarm_panel
-        to: disarmed
-        id: disarmed
-    timeout:
-      seconds: "{{ countdown }}"
-    continue_on_timeout: true
+  # Two branches run side by side. Pushes and your own actions are in the
+  # first: a renamed phone, a typo'd notify action or an offline siren fails
+  # only that branch. The countdown and dispatch are in the second and always
+  # run.
+  - parallel:
+      # ---- 1. Countdown push + your actions --------------------------------
+      - sequence:
+          - repeat:
+              for_each: "{{ notify_targets }}"
+              sequence:
+                - action: "{{ repeat.item }}"
+                  continue_on_error: true
+                  data:
+                    title: "{{ service_name }} alarm: {{ cause_source | trim }}"
+                    message: >-
+                      {% if nl_mode == 'Live' %}Calling Noonlight in {{ countdown }} s.
+                      {% elif nl_mode == 'Test' %}Calling Noonlight SANDBOX in {{ countdown }} s.
+                      {% elif nl_mode == 'Local' %}Simulating a dispatch in {{ countdown }} s.
+                      {% else %}Dry run ({{ nl_mode }} mode) - Noonlight will not be called.{% endif %}
+                      {{ extra_message }}
+                    data: >-
+                      {{ dict(dict(critical_data, tag=push_tag, actions=[
+                           {'action': action_cancel, 'title': "Cancel - I'm safe"},
+                           {'action': action_dispatch, 'title': 'Dispatch now'}]), **push_media) }}
+          - choose: []
+            default: !input on_triggered_actions
 
-  - variables:
-      # A real timeout leaves wait.remaining at 0. No trigger with time left
-      # means the wait itself failed to start (it returns instantly).
-      outcome: >-
-        {% if wait.trigger is not none %}{{ wait.trigger.id }}
-        {% elif (wait.remaining or 0) > 0 %}wait_failed
-        {% else %}timeout{% endif %}
+      # ---- 2. Countdown, then cancel or dispatch -----------------------------
+      - sequence:
+          # Wait for cancel / disarm / dispatch-now / timeout.
+          - wait_for_trigger:
+              - trigger: event
+                event_type: mobile_app_notification_action
+                event_data:
+                  action: "{{ action_cancel }}"
+                id: cancel
+              - trigger: event
+                event_type: mobile_app_notification_action
+                event_data:
+                  action: "{{ action_dispatch }}"
+                id: dispatch_now
+              - trigger: state
+                entity_id: !input alarm_panel
+                to: disarmed
+                id: disarmed
+            timeout:
+              seconds: "{{ countdown }}"
+            continue_on_timeout: true
 
-  # Never dispatch early because the wait broke: sit out the countdown anyway
-  # so disarming the panel still cancels.
-  - if: "{{ outcome == 'wait_failed' }}"
-    then:
-      - action: logbook.log
-        data:
-          name: "Noonlight {{ service_name }}"
-          message: "cancel buttons could not be armed; waiting {{ countdown }} s, disarm the panel to cancel."
-      - delay:
-          seconds: "{{ countdown }}"
+          - variables:
+              # A real timeout leaves wait.remaining at 0. No trigger with time
+              # left means the wait itself failed to start (it returns instantly).
+              outcome: >-
+                {% if wait.trigger is not none %}{{ wait.trigger.id }}
+                {% elif (wait.remaining or 0) > 0 %}wait_failed
+                {% else %}timeout{% endif %}
 
-  - variables:
-      # Panel disarmed while the push was being answered still counts as cancel.
-      panel_disarmed: >-
-        {{ alarm_panel is string and alarm_panel != '' and is_state(alarm_panel, 'disarmed') }}
+          # Never dispatch early because the wait broke: sit out the countdown
+          # anyway so disarming the panel still cancels.
+          - if: "{{ outcome == 'wait_failed' }}"
+            then:
+              - action: logbook.log
+                data:
+                  name: "Noonlight {{ service_name }}"
+                  message: "cancel buttons could not be armed; waiting {{ countdown }} s, disarm the panel to cancel."
+              - delay:
+                  seconds: "{{ countdown }}"
 
-  # ---- 3. Cancelled before dispatch -------------------------------------
-  - if:
-      - condition: template
-        value_template: "{{ outcome in ['cancel', 'disarmed'] or panel_disarmed }}"
-    then:
-      - action: logbook.log
-        data:
-          name: "Noonlight {{ service_name }}"
-          message: "cancelled before dispatch ({{ 'panel disarmed' if outcome != 'cancel' else 'Cancel button' }}). Noonlight was not called."
-      - action: "{{ notify_service }}"
-        data:
-          title: "{{ service_name }} alarm cancelled"
-          message: "Cancelled before dispatch. Noonlight was NOT called."
-          data:
-            tag: "{{ push_tag }}"
-      - choose: []
-        default: !input on_cancelled_actions
-      - stop: Cancelled before dispatch
+          - variables:
+              # Panel disarmed while the push was being answered still counts as cancel.
+              panel_disarmed: >-
+                {{ alarm_panel is string and alarm_panel != '' and is_state(alarm_panel, 'disarmed') }}
 
-  # ---- 4. Dispatch according to mode ------------------------------------
-  - action: logbook.log
-    data:
-      name: "Noonlight {{ service_name }}"
-      message: "countdown ended ({{ outcome }}). Dispatching in {{ nl_mode }} mode."
+          # ---- 3. Cancelled before dispatch --------------------------------
+          - if:
+              - condition: template
+                value_template: "{{ outcome in ['cancel', 'disarmed'] or panel_disarmed }}"
+            then:
+              - action: logbook.log
+                data:
+                  name: "Noonlight {{ service_name }}"
+                  message: "cancelled before dispatch ({{ 'panel disarmed' if outcome != 'cancel' else 'Cancel button' }}). Noonlight was not called."
+              # Side by side so a bad notify target can't skip your actions
+              # (siren off) and a failing action can't skip the push.
+              - parallel:
+                  - repeat:
+                      for_each: "{{ notify_targets }}"
+                      sequence:
+                        - action: "{{ repeat.item }}"
+                          continue_on_error: true
+                          data:
+                            title: "{{ service_name }} alarm cancelled"
+                            message: "{{ cause_source | trim }}. Cancelled before dispatch. Noonlight was NOT called."
+                            data:
+                              tag: "{{ push_tag }}"
+                  - sequence:
+                      - choose: []
+                        default: !input on_cancelled_actions
+              - stop: Cancelled before dispatch
 
-  # Tells the status tracker to expect a result. If none arrives (integration
-  # missing, Noonlight unreachable, this run crashed) it warns you to call 911.
-  - if: "{{ nl_mode in ['Local', 'Test', 'Live'] }}"
-    then:
-      - event: noonlight_dispatch_requested
-        event_data:
-          mode: "{{ nl_mode }}"
-          service: "{{ service }}"
-          alarm_cause: "{{ alarm_cause }}"
-
-  - choose:
-      - conditions: "{{ nl_mode == 'Off' }}"
-        sequence:
-          - action: "{{ notify_service }}"
+          # ---- 4. Dispatch according to mode -------------------------------
+          - action: logbook.log
             data:
-              title: "{{ service_name }} alarm - DRY RUN"
-              message: "Mode is Off. Noonlight would have been called now: {{ alarm_cause }}"
-              data:
-                tag: "{{ push_tag }}"
-          - stop: Dry run
+              name: "Noonlight {{ service_name }}"
+              message: "countdown ended ({{ outcome }}). Dispatching in {{ nl_mode }} mode."
 
-      - conditions: "{{ nl_mode == 'Local' }}"
-        sequence:
-          # Same events the integration fires, so the status tracker and its
-          # cancel button are exercised end to end without any network call.
-          - event: noonlight_alarm_attempted
-            event_data:
-              environment: local
-              api_endpoint: local
-              alarm_cause: "{{ alarm_cause }}"
-              services: ["{{ service }}"]
-          # Real Noonlight takes a moment too; lets the tracker start listening.
-          - delay: 1
-          - event: noonlight_alarm_created
-            event_data:
-              environment: local
-              api_endpoint: local
-              alarm_cause: "{{ alarm_cause }}"
-              services: ["{{ service }}"]
-              alarm_id: "{{ 'LOCAL-' ~ now().strftime('%Y%m%d%H%M%S') }}"
-              status: ACTIVE
+          # Tells the status tracker to expect a result. If none arrives
+          # (integration missing, Noonlight unreachable, this run crashed) it
+          # warns you to call 911.
+          - if: "{{ nl_mode in ['Local', 'Test', 'Live'] }}"
+            then:
+              - event: noonlight_dispatch_requested
+                event_data:
+                  mode: "{{ nl_mode }}"
+                  service: "{{ service }}"
+                  alarm_cause: "{{ alarm_cause }}"
 
-      - conditions: "{{ nl_mode == 'Test' }}"
-        sequence:
-          # The integration fails closed if the token is empty and fires
-          # noonlight_alarm_failed, which the status tracker reports.
-          - action: noonlight.create_alarm
-            data:
-              service: "{{ service }}"
-              alarm_cause: "{{ alarm_cause }}"
-              instructions: "{{ instructions }}"
-              api_endpoint: https://api-sandbox.noonlight.com/dispatch/v1
-              server_token_override: "{{ sandbox_token }}"
+          - choose:
+              - conditions: "{{ nl_mode == 'Off' }}"
+                sequence:
+                  - repeat:
+                      for_each: "{{ notify_targets }}"
+                      sequence:
+                        - action: "{{ repeat.item }}"
+                          continue_on_error: true
+                          data:
+                            title: "{{ service_name }} alarm - DRY RUN"
+                            message: "Mode is Off. Noonlight would have been called now: {{ alarm_cause }}"
+                            data:
+                              tag: "{{ push_tag }}"
+                  - stop: Dry run
 
-      - conditions: "{{ nl_mode == 'Live' }}"
-        sequence:
-          # Production endpoint is forced here so a sandbox URL left in the
-          # integration config can't silently swallow a real alarm.
-          # No server_token_override: the integration rejects one in production.
-          - action: noonlight.create_alarm
-            data:
-              service: "{{ service }}"
-              alarm_cause: "{{ alarm_cause }}"
-              instructions: "{{ instructions }}"
-              api_endpoint: https://api.noonlight.com/dispatch/v1
+              - conditions: "{{ nl_mode == 'Local' }}"
+                sequence:
+                  # Same events the integration fires, so the status tracker and
+                  # its cancel button are exercised end to end without any
+                  # network call.
+                  - event: noonlight_alarm_attempted
+                    event_data:
+                      environment: local
+                      api_endpoint: local
+                      alarm_cause: "{{ alarm_cause }}"
+                      services: ["{{ service }}"]
+                  # Real Noonlight takes a moment too; lets the tracker start listening.
+                  - delay: 1
+                  - event: noonlight_alarm_created
+                    event_data:
+                      environment: local
+                      api_endpoint: local
+                      alarm_cause: "{{ alarm_cause }}"
+                      services: ["{{ service }}"]
+                      alarm_id: "{{ 'LOCAL-' ~ now().strftime('%Y%m%d%H%M%S') }}"
+                      status: ACTIVE
 
-    default:
-      - action: logbook.log
-        data:
-          name: "Noonlight {{ service_name }}"
-          message: "NOT dispatched: mode helper is '{{ nl_mode }}', expected Off/Local/Test/Live."
-      - action: "{{ notify_service }}"
-        data:
-          title: "{{ service_name }} alarm NOT SENT"
-          message: "Mode helper is '{{ nl_mode }}', not Off/Local/Test/Live. Noonlight was not called. Call 911 yourself if this is real."
-          data:
-            tag: "{{ push_tag }}"
-            push:
-              interruption-level: critical
-              sound:
-                name: default
-                critical: 1
-                volume: 1.0
-            ttl: 0
-            priority: high
-            channel: alarm_stream
-      - stop: Invalid mode
+              - conditions: "{{ nl_mode == 'Test' }}"
+                sequence:
+                  # The integration fails closed if the token is empty and fires
+                  # noonlight_alarm_failed, which the status tracker reports.
+                  - action: noonlight.create_alarm
+                    data:
+                      service: "{{ service }}"
+                      alarm_cause: "{{ alarm_cause }}"
+                      instructions: "{{ instructions }}"
+                      api_endpoint: https://api-sandbox.noonlight.com/dispatch/v1
+                      server_token_override: "{{ sandbox_token }}"
 
-  - choose: []
-    default: !input on_dispatched_actions
+              - conditions: "{{ nl_mode == 'Live' }}"
+                sequence:
+                  # Production endpoint is forced here so a sandbox URL left in
+                  # the integration config can't silently swallow a real alarm.
+                  # No server_token_override: the integration rejects one in
+                  # production.
+                  - action: noonlight.create_alarm
+                    data:
+                      service: "{{ service }}"
+                      alarm_cause: "{{ alarm_cause }}"
+                      instructions: "{{ instructions }}"
+                      api_endpoint: https://api.noonlight.com/dispatch/v1
+
+            default:
+              - action: logbook.log
+                data:
+                  name: "Noonlight {{ service_name }}"
+                  message: "NOT dispatched: mode helper is '{{ nl_mode }}', expected Off/Local/Test/Live."
+              - repeat:
+                  for_each: "{{ notify_targets }}"
+                  sequence:
+                    - action: "{{ repeat.item }}"
+                      continue_on_error: true
+                      data:
+                        title: "{{ service_name }} alarm NOT SENT"
+                        message: "Mode helper is '{{ nl_mode }}', not Off/Local/Test/Live. Noonlight was not called. Call 911 yourself if this is real."
+                        data: "{{ dict(critical_data, tag=push_tag) }}"
+              - stop: Invalid mode
+
+          - choose: []
+            default: !input on_dispatched_actions

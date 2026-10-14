@@ -84,6 +84,14 @@ async def main():
     for s in ["binary_sensor.front_door", "binary_sensor.smoke", "binary_sensor.motion"]:
         hass.states.async_set(s, "off")
     hass.states.async_set("zone.home", "1")
+    hass.states.async_set("lock.front", "locked")
+    from homeassistant import config_entries as ce
+    phone_entry = ce.ConfigEntry(data={}, domain="mobile_app", title="me", version=1, minor_version=1,
+                                 source="user", options={}, unique_id="me", discovery_keys={},
+                                 subentries_data=None)
+    hass.config_entries._entries[phone_entry.entry_id] = phone_entry
+    phone = device_registry.async_get(hass).async_get_or_create(
+        config_entry_id=phone_entry.entry_id, identifiers={("mobile_app", "me")}, name="me")
 
     assert await async_setup_component(hass, "automation", {"automation": [
         {"id": "trip", "alias": "trip", **bp("alarm_sensor_trigger.yaml", alarm_panel=P,
@@ -92,10 +100,13 @@ async def main():
         {"id": "police", "alias": "police", **bp("noonlight_dispatch.yaml", trigger_entities=[P], alarm_panel=P,
                              last_trigger_helper="input_text.noonlight_last_trigger", service="police",
                              mode_helper=MODE, sandbox_token="SBTOKEN", instructions="dog inside",
-                             notify_service="notify.mobile_app_me", countdown=10)},
+                             notify_devices=[phone.id], notify_service="notify.does_not_exist",
+                             on_triggered_actions=[{"action": "notify.also_missing"}],
+                             camera="camera.front", tap_url="/lovelace/security",
+                             extra_message="Lock: {{ states('lock.front') }}", countdown=10)},
         {"id": "fire", "alias": "fire", **bp("noonlight_dispatch.yaml", trigger_entities=["binary_sensor.smoke"], service="fire",
                            mode_helper=MODE, notify_service="notify.mobile_app_me", countdown=10)},
-        {"id": "tracker", "alias": "tracker", **bp("noonlight_status_tracker.yaml", notify_service="notify.mobile_app_me",
+        {"id": "tracker", "alias": "tracker", **bp("noonlight_status_tracker.yaml", notify_devices=[phone.id],
                               household_notify_service="notify.family",
                               alarm_id_helper="input_text.noonlight_last_alarm_id",
                               cancel_service_available=True, result_timeout=10)},
@@ -158,10 +169,10 @@ async def main():
     check("sensor trips panel", took("alarm_control_panel.alarm_trigger"))
     check("trip records sensor name", hass.states.get("input_text.noonlight_last_trigger").state == "front door",
           hass.states.get("input_text.noonlight_last_trigger"))
-    check("countdown push sent", any("Police alarm - Off mode" in t for t in pushes()), pushes())
+    check("countdown push sent", any(t.startswith("Police alarm: ") for t in pushes()), pushes())
     # dedup: second sensor during countdown
     hass.states.async_set("binary_sensor.motion", "on"); await settle()
-    check("no second countdown", sum("Police alarm - Off mode" in t for t in pushes()) == 1, pushes())
+    check("no second countdown", sum(t.startswith("Police alarm: ") for t in pushes()) == 1, pushes())
     await settle(11)
     check("Off -> DRY RUN push", last_push("Police alarm - DRY RUN"), pushes())
     check("Off -> no create_alarm", not took("noonlight.create_alarm"))
@@ -189,6 +200,19 @@ async def main():
     press(countdown_actions()[1]); await settle(1.5)
     ca = took("noonlight.create_alarm")
     check("Live dispatch-now calls create_alarm once", len(ca) == 1, ca)
+    check("bad notify target + failing custom action don't stop dispatch", len(ca) == 1, ca)
+    cd = [d for n, d in calls if n == "notify.mobile_app_me" and d.get("title", "").startswith("Police alarm: ")]
+    check("phone picker -> notify.mobile_app_me", cd, pushes())
+    if cd:
+        data, msg = cd[0]["data"], cd[0]["message"]
+        check("push title names the sensor", "front door" in cd[0]["title"], cd[0]["title"])
+        check("camera snapshot + live feed", data.get("image") == "/api/camera_proxy/camera.front"
+              and data.get("entity_id") == "camera.front", data)
+        check("tap opens dashboard (iOS + Android)", data.get("url") == "/lovelace/security"
+              and data.get("clickAction") == "/lovelace/security", data)
+        check("extra message template rendered", "Lock: locked" in msg, msg)
+        check("countdown push still critical with buttons", data.get("push", {}).get("interruption-level") == "critical"
+              and len(data.get("actions", [])) == 2, data)
     check("Live uses production endpoint", ca and ca[0].get("api_endpoint") == "https://api.noonlight.com/dispatch/v1", ca)
     check("Live sends no sandbox token", ca and "server_token_override" not in ca[0], ca)
     check("alarm_cause names the sensor", ca and "front door" in ca[0].get("alarm_cause", ""), ca)
@@ -210,7 +234,7 @@ async def main():
     # 8. Fire, Test mode, no token -> integration fails closed -> FAILED critical push
     await reset("Test")
     hass.states.async_set("binary_sensor.smoke", "on"); await settle(11.5)
-    check("Fire countdown push", any("Fire alarm - Test mode" in t for t in pushes()), pushes())
+    check("Fire countdown push (notify_service only)", any(t.startswith("Fire alarm: ") for t in pushes()), pushes())
     check("missing token -> FAILED push", last_push("Noonlight alarm FAILED"), pushes())
 
     # 9. invalid mode -> NOT SENT
