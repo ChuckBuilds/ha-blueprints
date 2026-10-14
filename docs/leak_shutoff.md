@@ -28,16 +28,21 @@ that is turned **off** to close.
 | Two sensors wet at once | One countdown each, both named |
 | A second sensor while the water is already off | Quiet "also wet" note, no duplicate alarm |
 | Valve does not confirm closed | Loud "SHUTOFF DID NOT CONFIRM - check the main" |
-| A notify service is mistyped | Shutoff still happens; the failure is logged |
-| Sensor rejoins the mesh already wet | Nothing - only a real dry-to-wet edge arms it |
+| A notify service is mistyped or a phone renamed | The other phones are still alerted and the shutoff still happens; the failure is logged |
+| Sensor still `unknown` after a restart, first report is wet | Alerts and starts the countdown |
+| Sensor rejoins the mesh already wet (`unavailable -> on`) | Nothing |
 | Home Assistant restarts | No detection while down; countdowns in flight are lost |
 
-That second-to-last row is deliberate. A bare `to: "on"` trigger also matches
-`unavailable -> on`, so a sensor that drops off the mesh and rejoins wet - or a
-stuck sensor whose entity is re-added at startup - would arm a real countdown.
-Nobody is watching their phone during an update. Requiring a definite
-`off -> on` edge costs a rare missed alert and buys never shutting the water
-off on a restart artefact.
+The `unknown` and `unavailable` rows are deliberately different. After a
+restart, most Zigbee leak sensors stay `unknown` until they next report, often
+for hours, so requiring a dry-to-wet edge would ignore a real leak on all of
+them for that whole time. A sensor whose first report is "wet" is almost always
+really wet. A sensor dropping off the mesh and rejoining wet is where stale
+readings come from, so that one is ignored.
+
+Notifications run beside the countdown and the shutoff, never in front of
+them. A missing notify action raises an error that `continue_on_error` cannot
+catch, so it can only fail its own branch, not the valve.
 
 ## Inputs
 
@@ -45,7 +50,8 @@ off on a restart artefact.
 |---|---|---|
 | Leak sensors | - | `binary_sensor` entities with `device_class: moisture` |
 | Water shutoff valve | - | A `switch`, turned **off** to close |
-| Notification services | - | Full names, e.g. `notify.mobile_app_your_phone` |
+| Phones to notify | - | Pick Companion app phones. Safer than typing: the action name comes from the phone |
+| Other notify actions | - | Optional typed names, e.g. `notify.family_phones`. Sent after the phones |
 | Countdown before shutoff | 2 min | The whole safety margin |
 | Snooze after Cancel | 30 min | How long a cancelled sensor stays quiet |
 | Snooze timer prefix | `timer.leak_snooze_` | See Install - needs helpers |
