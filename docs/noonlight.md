@@ -113,7 +113,7 @@ the countdown starts", or it sounds on every normal arrival.
 | Situation | What happens |
 |---|---|
 | Panel goes triggered / smoke sensor on | Critical push with Cancel and Dispatch now, countdown starts |
-| **Disarm** tapped | iPhone asks for Face ID / passcode, then the panel is disarmed and Noonlight is not called. If the panel does not disarm (wrong code), a loud "Panel did NOT disarm" push follows; Noonlight is still not called |
+| **Disarm** tapped | The phone asks to be unlocked first (Face ID / passcode on iPhone; fingerprint / face / PIN on Android 12+; older Android does not ask), then the panel is disarmed and Noonlight is not called. If the panel does not disarm (wrong code), a loud "Panel did NOT disarm" push follows; Noonlight is still not called |
 | **Cancel - I'm safe** tapped | Noonlight not called, panel **stays armed** (for when you are away and the camera shows nothing wrong) |
 | Panel disarmed during countdown (app / keypad) | Same as Disarm |
 | Dispatch now tapped | Skips the rest of the countdown |
@@ -133,7 +133,7 @@ the countdown starts", or it sounds on every normal arrival.
 |---|---|---|
 | Trigger entities | - | Alarm panel (fires on `triggered`) and/or binary sensors / toggles (fire on `on`) |
 | Alarm panel (disarm cancels) | - | Optional. Usually the same panel as above |
-| Panel code (for the Disarm button) | - | Adds the Face ID-protected **Disarm** button. Not needed if the panel has no code. Stored in the automation like any input |
+| Panel code (for the Disarm button) | - | Adds the **Disarm** button, which needs the phone unlocked (iPhone, Android 12+). Not needed if the panel has no code. Stored in the automation like any input |
 | Last tripped sensor helper | - | Optional `input_text` from the sensor blueprint, so Noonlight hears "Back door" |
 | Service | Police | Police, Fire or Medical |
 | Mode helper | - | `input_select` with Off / Local / Test / Live |

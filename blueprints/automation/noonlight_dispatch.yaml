@@ -322,8 +322,9 @@ actions:
                       {% elif nl_mode == 'Local' %}{{ stop }}, or a dispatch is simulated in {{ countdown }} s.
                       {% else %}Dry run ({{ nl_mode }} mode) - Noonlight will not be called.{% endif %}
                       {{ extra_message }}
-                    # Disarm asks for Face ID / passcode on iPhone
-                    # (authenticationRequired; Android has no equivalent).
+                    # Disarm needs the phone unlocked first (authenticationRequired):
+                    # Face ID / passcode on iPhone, fingerprint / face / PIN on
+                    # Android 12+. Older Android ignores it.
                     # Cancel stops Noonlight but leaves the panel armed, for
                     # when you are away and the camera shows nothing wrong.
                     data: >-
