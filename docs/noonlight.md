@@ -169,7 +169,17 @@ Read the whole story afterwards in **Logbook**, search `Noonlight`.
 | Sensors | - | `on` = open / motion |
 | Armed states that count | Away, Night | Make one automation for perimeter (all modes) and one for interior motion (away only) |
 | Debounce | 1 s | Sensor must stay open this long |
-| Last tripped sensor helper | - | Optional; feeds the dispatch alarm cause |
+| Last tripped sensor helper | - | Optional; feeds the push title and the Noonlight alarm cause |
+
+The helper gets what happened, worded by the sensor's type, so the push and the Noonlight operator read `Police alarm: Front Door opened`:
+
+| Sensor type (device class) | Wording |
+|---|---|
+| door, window, garage door, opening | `Front Door opened` |
+| motion, occupancy, presence | `Motion detected: Kitchen Motion` |
+| anything else | `<name> triggered` |
+
+The name is the sensor's friendly name, so name your sensors the way you want them read out (e.g. "Front Door", not "Front Door Door").
 
 Only `off -> on` counts. Sensors coming back from `unavailable` after a
 reboot or radio drop never trip the panel.
@@ -251,7 +261,7 @@ cancel. Put your real instructions back. Leave mode on Live.
 
 `tests/runtime_test.py` runs all four blueprints inside a headless Home
 Assistant with recorded (fake) notify, Noonlight and panel actions and plays
-through 44 scenarios. Needs `pip install homeassistant`; takes about 2.5
+through 45 scenarios. Needs `pip install homeassistant`; takes about 2.5
 minutes and exits non-zero on any failure.
 
 ## Disclaimer
