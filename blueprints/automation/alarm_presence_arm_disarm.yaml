@@ -13,6 +13,7 @@ blueprint:
       * Auto-disarm never touches a panel that is already "triggered" - an
         alarm in progress must be cancelled on purpose (button or keypad).
   domain: automation
+  author: ChuckBuilds
   homeassistant:
     min_version: 2024.10.0
   input:

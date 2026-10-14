@@ -17,6 +17,7 @@ blueprint:
     One automation per door. Remember to disable the lock's own auto-lock in the
     manufacturer's app, or the two will fight each other.
   domain: automation
+  author: ChuckBuilds
   input:
     lock_entity:
       name: Lock
