@@ -33,4 +33,4 @@ Import blueprint, and paste the blueprint's GitHub URL from its guide.
 | `blueprints/automation/` | The blueprint files (these paths are what Home Assistant re-imports from, so they don't move) |
 | `docs/` | One guide per blueprint |
 | `examples/` | Helpers and example automations in YAML |
-| `tests/` | `runtime_test.py`, which runs the alarm blueprints in a headless Home Assistant |
+| `tests/` | `runtime_test.py` (alarm blueprints) and `leak_test.py` (leak shutoff), run in a headless Home Assistant |
