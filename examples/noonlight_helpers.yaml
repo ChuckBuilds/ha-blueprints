@@ -1,0 +1,54 @@
+# Helpers and alarm panel for the Noonlight blueprints.
+# Add to configuration.yaml (or a package) and restart. The helpers can also
+# be made in the UI: Settings > Devices & services > Helpers > Create helper.
+
+input_select:
+  # Off / Local / Test / Live. The dispatch blueprint refuses anything else.
+  # A new helper starts on the first option, so keep "Off" first. No
+  # "initial:" on purpose - Home Assistant restores the last mode after a
+  # restart, so a Live system stays Live.
+  noonlight_mode:
+    name: Noonlight Mode
+    icon: mdi:shield-alert
+    options:
+      - "Off"
+      - "Local"
+      - "Test"
+      - "Live"
+
+input_text:
+  # Written by the status tracker; read by the webhook test scripts.
+  noonlight_last_alarm_id:
+    name: Noonlight Last Alarm ID
+    max: 100
+  # Written by the sensor trigger blueprint; read by the dispatch blueprint.
+  noonlight_last_trigger:
+    name: Noonlight Last Tripped Sensor
+    max: 100
+
+# A manual alarm panel. Times are seconds.
+#   arming_time  - exit delay after arming
+#   delay_time   - ENTRY delay: "pending" before "triggered" (your first
+#                  chance to disarm, before the Noonlight countdown even starts)
+#   trigger_time - how long it stays "triggered"
+alarm_control_panel:
+  - platform: manual
+    name: Home Alarm
+    # code: !secret alarm_code
+    code_arm_required: false
+    arming_time: 60
+    delay_time: 30
+    trigger_time: 600
+    disarm_after_trigger: false
+    armed_home:
+      arming_time: 0
+    armed_night:
+      arming_time: 0
+
+# Optional: send one push to several phones.
+# notify:
+#   - platform: group
+#     name: family_phones
+#     services:
+#       - action: mobile_app_your_phone
+#       - action: mobile_app_partner_phone

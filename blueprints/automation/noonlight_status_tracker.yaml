@@ -1,0 +1,337 @@
+blueprint:
+  name: Noonlight status tracker (results, cancel button, webhooks)
+  description: >-
+    Follows every Noonlight alarm from start to finish and tells you about it.
+
+    Listens for the events the Noonlight Enhanced integration fires (and the
+    simulated ones the dispatch blueprint fires in Local mode):
+      * requested - from the dispatch blueprint; if no result follows in
+                    time you get a "no response - call 911" push.
+      * attempted - logbook only.
+      * created   - push with the alarm ID and a "Cancel Noonlight alarm"
+                    button. Saves the ID to a helper.
+      * failed    - critical push: Noonlight was NOT reached, call 911 yourself.
+      * canceled  - push confirming the cancel.
+      * webhook   - Noonlight's own updates, in plain English: "Operator
+                    contacted 911", "Alarm closed by dispatcher", "Cancelled by
+                    phone +1555...".
+
+    Everything is written to the logbook (filter on "Noonlight") so you can
+    read the full alarm timeline afterwards.
+
+    Create ONE automation from this blueprint. It covers police, fire and
+    medical.
+  domain: automation
+  homeassistant:
+    min_version: 2024.10.0
+  input:
+    notify_service:
+      name: Notify action
+      description: >-
+        Who gets alarm status pushes, e.g. notify.mobile_app_your_phone or a
+        notify group. Use the same one as your dispatch automations.
+      selector:
+        text:
+    household_notify_service:
+      name: Household notify action
+      description: >-
+        Optional. Everyone else who should know an alarm went out, failed, or
+        was cancelled (people who may get Noonlight's calls / texts). Leave
+        empty to skip.
+      default: ""
+      selector:
+        text:
+    alarm_id_helper:
+      name: Last alarm ID helper
+      description: Optional input_text that stores the latest alarm ID.
+      default: []
+      selector:
+        entity:
+          filter:
+            - domain: input_text
+    cancel_service_available:
+      name: Integration has noonlight.cancel_alarm
+      description: >-
+        Turn on only if your Noonlight integration provides the
+        noonlight.cancel_alarm action. While off, the push tells you to cancel
+        by answering Noonlight's call or text and giving your PIN.
+        Local-mode alarms can always be cancelled from the button.
+      default: false
+      selector:
+        boolean:
+    result_timeout:
+      name: Result timeout
+      description: >-
+        Seconds to wait for Noonlight to answer after an attempt before
+        warning you that the result is unknown.
+      default: 45
+      selector:
+        number:
+          min: 10
+          max: 300
+          unit_of_measurement: seconds
+          mode: box
+    push_webhooks:
+      name: Push Noonlight webhook updates
+      description: Off = webhooks go to the logbook only.
+      default: true
+      selector:
+        boolean:
+    status_card:
+      name: Show latest status as a notification card
+      description: Keeps a persistent notification in the HA sidebar with the latest status.
+      default: true
+      selector:
+        boolean:
+
+# Events can arrive close together (attempted + created); each gets its own run.
+mode: parallel
+max: 25
+
+triggers:
+  - trigger: event
+    event_type: noonlight_dispatch_requested
+    id: requested
+  - trigger: event
+    event_type: noonlight_alarm_attempted
+    id: attempted
+  - trigger: event
+    event_type: noonlight_alarm_created
+    id: created
+  - trigger: event
+    event_type: noonlight_alarm_failed
+    id: failed
+  - trigger: event
+    event_type: noonlight_alarm_canceled
+    id: canceled
+  - trigger: event
+    event_type: noonlight_webhook_received
+    id: webhook
+  - trigger: event
+    event_type: mobile_app_notification_action
+    id: cancel_button
+
+conditions:
+  # Ignore every other notification button in the house.
+  - condition: template
+    value_template: >-
+      {{ trigger.id != 'cancel_button'
+         or (trigger.event.data.action | default('')).startswith('NOONLIGHT_CANCEL_') }}
+
+variables:
+  notify_service: !input notify_service
+  household_notify_service: !input household_notify_service
+  alarm_id_helper: !input alarm_id_helper
+  cancel_service_available: !input cancel_service_available
+  result_timeout: !input result_timeout
+  push_webhooks: !input push_webhooks
+  status_card: !input status_card
+  d: "{{ trigger.event.data }}"
+  env: "{{ d.environment | default('') }}"
+  env_label: >-
+    {{ {'production': 'LIVE', 'sandbox': 'SANDBOX', 'local': 'LOCAL TEST'}.get(env, env | upper) }}
+  what: "{{ (d.services | default(['?'])) | join(', ') | title }}"
+  critical:
+    push:
+      interruption-level: critical
+      sound:
+        name: default
+        critical: 1
+        volume: 1.0
+    ttl: 0
+    priority: high
+    channel: alarm_stream
+
+actions:
+  - choose:
+      # ---- attempted: the integration started talking to Noonlight -------
+      - conditions: "{{ trigger.id == 'attempted' }}"
+        sequence:
+          - action: logbook.log
+            data:
+              name: Noonlight
+              message: "{{ env_label }} {{ what }} alarm attempted: {{ d.alarm_cause }}"
+
+      # ---- requested: dispatch blueprint handed off; watch for a result ---
+      # Catches every silent failure: integration not installed, Noonlight
+      # unreachable, the dispatch run crashing before the integration fired.
+      - conditions: "{{ trigger.id == 'requested' }}"
+        sequence:
+          - action: logbook.log
+            data:
+              name: Noonlight
+              message: "{{ d.mode }} {{ d.service | title }} dispatch requested: {{ d.alarm_cause }}"
+          - wait_for_trigger:
+              - trigger: event
+                event_type: noonlight_alarm_created
+              - trigger: event
+                event_type: noonlight_alarm_failed
+            timeout:
+              seconds: "{{ result_timeout }}"
+            continue_on_timeout: true
+          - if: "{{ wait.trigger is none }}"
+            then:
+              - action: logbook.log
+                data:
+                  name: Noonlight
+                  message: "no result {{ result_timeout }} s after the dispatch request."
+              - action: "{{ notify_service }}"
+                data:
+                  title: "Noonlight: no response"
+                  message: >-
+                    {{ d.mode }} {{ d.service | title }} alarm requested {{ result_timeout }} s ago
+                    and no result came back. It may NOT be active. Call 911 yourself
+                    if this is real. Check the Noonlight integration and HA logs.
+                  data: "{{ critical }}"
+
+      # ---- created: alarm is active ------------------------------------
+      - conditions: "{{ trigger.id == 'created' }}"
+        sequence:
+          - variables:
+              can_cancel: "{{ env == 'local' or cancel_service_available }}"
+          - if: "{{ alarm_id_helper is string and alarm_id_helper != '' }}"
+            then:
+              - action: input_text.set_value
+                target:
+                  entity_id: "{{ alarm_id_helper }}"
+                data:
+                  value: "{{ d.alarm_id }}"
+          - action: logbook.log
+            data:
+              name: Noonlight
+              message: "{{ env_label }} {{ what }} alarm ACTIVE, id {{ d.alarm_id }}"
+          - action: "{{ notify_service }}"
+            data:
+              title: "Noonlight {{ env_label }} {{ what }} alarm ACTIVE"
+              message: >-
+                {{ d.alarm_cause }}. Noonlight is contacting you now.
+                {% if not can_cancel %}To cancel: answer Noonlight's call or text and give your PIN.{% endif %}
+                ID {{ d.alarm_id }}
+              data:
+                tag: "{{ 'noonlight_' ~ d.alarm_id }}"
+                push: "{{ critical.push }}"
+                ttl: 0
+                priority: high
+                channel: alarm_stream
+                actions: >-
+                  {{ [{'action': 'NOONLIGHT_CANCEL_' ~ d.alarm_id, 'title': 'Cancel Noonlight alarm'}]
+                     if can_cancel else [] }}
+          - if: "{{ household_notify_service != '' }}"
+            then:
+              - action: "{{ household_notify_service }}"
+                data:
+                  title: "Noonlight {{ env_label }} {{ what }} alarm ACTIVE"
+                  message: "{{ d.alarm_cause }}. Expect a call or text from Noonlight."
+
+      # ---- failed: Noonlight was NOT reached ----------------------------
+      - conditions: "{{ trigger.id == 'failed' }}"
+        sequence:
+          - variables:
+              was_cancel: "{{ d.action | default('') == 'cancel' }}"
+              headline: >-
+                {{ 'Noonlight CANCEL failed' if was_cancel else 'Noonlight alarm FAILED' }}
+              advice: >-
+                {{ 'The alarm may still be active. Answer Noonlight and give your PIN.'
+                   if was_cancel else 'Noonlight was NOT reached. Call 911 yourself if this is real.' }}
+          - action: logbook.log
+            data:
+              name: Noonlight
+              message: "{{ headline }} ({{ env_label }}): {{ d.error }}"
+          - action: "{{ notify_service }}"
+            data:
+              title: "{{ headline }}"
+              message: "{{ advice }} Error: {{ d.error }}"
+              data: "{{ critical }}"
+          - if: "{{ household_notify_service != '' }}"
+            then:
+              - action: "{{ household_notify_service }}"
+                data:
+                  title: "{{ headline }}"
+                  message: "{{ advice }}"
+
+      # ---- canceled ------------------------------------------------------
+      - conditions: "{{ trigger.id == 'canceled' }}"
+        sequence:
+          - action: logbook.log
+            data:
+              name: Noonlight
+              message: "{{ env_label }} alarm {{ d.alarm_id }} CANCELLED from Home Assistant"
+          - action: "{{ notify_service }}"
+            data:
+              title: "Noonlight alarm cancelled"
+              message: "Alarm {{ d.alarm_id }} ({{ env_label }}) was cancelled."
+              data:
+                tag: "{{ 'noonlight_' ~ d.alarm_id }}"
+          - if: "{{ household_notify_service != '' }}"
+            then:
+              - action: "{{ household_notify_service }}"
+                data:
+                  title: "Noonlight alarm cancelled"
+                  message: "False alarm, cancelled from Home Assistant."
+
+      # ---- cancel button on the "ACTIVE" push ----------------------------
+      - conditions: "{{ trigger.id == 'cancel_button' }}"
+        sequence:
+          - variables:
+              alarm_id: "{{ trigger.event.data.action[17:] }}"
+          - action: logbook.log
+            data:
+              name: Noonlight
+              message: "cancel requested from phone for alarm {{ alarm_id }}"
+          - if: "{{ alarm_id.startswith('LOCAL-') }}"
+            then:
+              - event: noonlight_alarm_canceled
+                event_data:
+                  alarm_id: "{{ alarm_id }}"
+                  environment: local
+            else:
+              # The integration fires noonlight_alarm_canceled or
+              # noonlight_alarm_failed (action: cancel); both are handled above.
+              - action: noonlight.cancel_alarm
+                data:
+                  alarm_id: "{{ alarm_id }}"
+                continue_on_error: true
+
+      # ---- Noonlight webhooks --------------------------------------------
+      - conditions: "{{ trigger.id == 'webhook' }}"
+        sequence:
+          - repeat:
+              # Noonlight posts a list of events; tolerate a single object too.
+              for_each: "{{ d.payload if d.payload is list else [d.payload] }}"
+              sequence:
+                - variables:
+                    ev: "{{ repeat.item if repeat.item is mapping else {} }}"
+                    meta: "{{ ev.get('meta') or {} }}"
+                    hook_alarm_id: "{{ meta.get('alarm_id', '?') }}"
+                    text: >-
+                      {% set t = ev.get('event_type', 'unknown') %}
+                      {% if t == 'alarm.psap_contacted' %}Noonlight operator contacted 911 (PSAP)
+                      {% elif t == 'alarm.closed' %}Alarm closed by Noonlight dispatcher
+                      {% elif t == 'alarm.status.canceled' %}Alarm cancelled by {{ (meta.get('canceled_by') or {}).get('phone', 'phone') }}
+                      {% else %}Noonlight update: {{ t }}{% endif %}
+                - action: logbook.log
+                  data:
+                    name: Noonlight
+                    message: "webhook: {{ text | trim }} (alarm {{ hook_alarm_id }})"
+                - if: "{{ push_webhooks }}"
+                  then:
+                    - action: "{{ notify_service }}"
+                      data:
+                        title: Noonlight update
+                        message: "{{ text | trim }}"
+                        data:
+                          tag: "{{ 'noonlight_' ~ hook_alarm_id }}"
+
+  - if: "{{ status_card and trigger.id != 'cancel_button' }}"
+    then:
+      - action: persistent_notification.create
+        data:
+          notification_id: noonlight_status
+          title: Noonlight status
+          message: >-
+            **{{ trigger.id | title }}** {{ env_label }} at {{ now().strftime('%H:%M:%S') }}
+
+            {{ d.alarm_cause | default('') }} {{ d.error | default('') }}
+            {% if d.alarm_id is defined %}Alarm ID: {{ d.alarm_id }}{% endif %}
+
+            Full timeline: Logbook, search "Noonlight".

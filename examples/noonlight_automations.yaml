@@ -1,0 +1,86 @@
+# Example wiring for the Noonlight + alarm blueprints.
+# Same as creating them in the UI from the imported blueprints. Adjust entity
+# IDs and notify actions to yours.
+
+# Sensors trip the panel. Perimeter doors count in every armed mode.
+- id: alarm_trip_perimeter
+  alias: Alarm - perimeter doors trip panel
+  use_blueprint:
+    path: ChuckBuilds/alarm_sensor_trigger.yaml
+    input:
+      alarm_panel: alarm_control_panel.home_alarm
+      sensors:
+        - binary_sensor.front_door_contact
+        - binary_sensor.back_door_contact
+      armed_states: [armed_away, armed_home, armed_night]
+      debounce: 1
+      last_trigger_helper: input_text.noonlight_last_trigger
+
+# Interior motion only counts when nobody is home.
+- id: alarm_trip_motion
+  alias: Alarm - interior motion trips panel (away)
+  use_blueprint:
+    path: ChuckBuilds/alarm_sensor_trigger.yaml
+    input:
+      alarm_panel: alarm_control_panel.home_alarm
+      sensors:
+        - binary_sensor.living_room_motion
+      armed_states: [armed_away]
+      debounce: 3
+      last_trigger_helper: input_text.noonlight_last_trigger
+
+# Police: alarm panel triggered -> 60 s countdown -> Noonlight.
+- id: noonlight_police
+  alias: Noonlight - Police
+  use_blueprint:
+    path: ChuckBuilds/noonlight_dispatch.yaml
+    input:
+      trigger_entities: [alarm_control_panel.home_alarm]
+      alarm_panel: alarm_control_panel.home_alarm
+      last_trigger_helper: input_text.noonlight_last_trigger
+      service: police
+      mode_helper: input_select.noonlight_mode
+      sandbox_token: !secret noonlight_sandbox_token
+      instructions: "Two adults and a dog live here. Side gate code 1234."
+      notify_service: notify.mobile_app_your_phone
+      countdown: 60
+
+# Fire: smoke / CO sensors -> 30 s countdown -> Noonlight. No panel needed.
+- id: noonlight_fire
+  alias: Noonlight - Fire
+  use_blueprint:
+    path: ChuckBuilds/noonlight_dispatch.yaml
+    input:
+      trigger_entities:
+        - binary_sensor.kitchen_smoke
+        - binary_sensor.hallway_smoke
+        - binary_sensor.hallway_co
+      service: fire
+      mode_helper: input_select.noonlight_mode
+      sandbox_token: !secret noonlight_sandbox_token
+      instructions: "Smoke detector alarm. Occupants may be asleep upstairs."
+      notify_service: notify.mobile_app_your_phone
+      countdown: 30
+
+# One tracker for all services.
+- id: noonlight_status_tracker
+  alias: Noonlight - status tracker
+  use_blueprint:
+    path: ChuckBuilds/noonlight_status_tracker.yaml
+    input:
+      notify_service: notify.mobile_app_your_phone
+      household_notify_service: notify.family_phones
+      alarm_id_helper: input_text.noonlight_last_alarm_id
+      cancel_service_available: false
+
+- id: alarm_presence
+  alias: Alarm - arm when everyone leaves
+  use_blueprint:
+    path: ChuckBuilds/alarm_presence_arm_disarm.yaml
+    input:
+      alarm_panel: alarm_control_panel.home_alarm
+      presence_zone: zone.home
+      arm_action: alarm_control_panel.alarm_arm_away
+      arm_delay: 5
+      auto_disarm: false
+      notify_service: notify.mobile_app_your_phone
