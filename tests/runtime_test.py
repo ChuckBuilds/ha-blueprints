@@ -140,7 +140,7 @@ async def main():
     async def reset(mode):
         calls.clear()
         hass.states.async_set(P, "disarmed")
-        hass.states.async_set("binary_sensor.front_door", "off")
+        hass.states.async_set("binary_sensor.front_door", "off", {"device_class": "door"})
         hass.states.async_set("binary_sensor.smoke", "off")
         hass.states.async_set(MODE, mode)
         await settle(1)
@@ -155,28 +155,28 @@ async def main():
     # 1. sensor guard: unavailable -> on does not trip; armed_home not counted
     await reset("Off")
     hass.states.async_set(P, "armed_away")
-    hass.states.async_set("binary_sensor.front_door", "unavailable"); await settle()
-    hass.states.async_set("binary_sensor.front_door", "on"); await settle()
+    hass.states.async_set("binary_sensor.front_door", "unavailable", {"device_class": "door"}); await settle()
+    hass.states.async_set("binary_sensor.front_door", "on", {"device_class": "door"}); await settle()
     check("unavailable->on ignored", not took("alarm_control_panel.alarm_trigger"), calls)
-    hass.states.async_set("binary_sensor.front_door", "off"); hass.states.async_set(P, "armed_home"); await settle()
-    hass.states.async_set("binary_sensor.front_door", "on"); await settle()
+    hass.states.async_set("binary_sensor.front_door", "off", {"device_class": "door"}); hass.states.async_set(P, "armed_home"); await settle()
+    hass.states.async_set("binary_sensor.front_door", "on", {"device_class": "door"}); await settle()
     check("armed_home not counted by default", not took("alarm_control_panel.alarm_trigger"), calls)
 
     # 2. Off mode: sensor trips panel -> countdown -> dry run, no Noonlight
     await reset("Off")
     hass.states.async_set(P, "armed_away")
-    hass.states.async_set("binary_sensor.front_door", "on"); await settle(1)
+    hass.states.async_set("binary_sensor.front_door", "on", {"device_class": "door"}); await settle(1)
     check("sensor trips panel", took("alarm_control_panel.alarm_trigger"))
-    check("trip records sensor name", hass.states.get("input_text.noonlight_last_trigger").state == "front door",
+    check("trip records what happened", hass.states.get("input_text.noonlight_last_trigger").state == "front door opened",
           hass.states.get("input_text.noonlight_last_trigger"))
     check("countdown push sent", any(t.startswith("Police alarm: ") for t in pushes()), pushes())
     # dedup: second sensor during countdown
-    hass.states.async_set("binary_sensor.motion", "on"); await settle()
+    hass.states.async_set("binary_sensor.motion", "on", {"device_class": "motion"}); await settle()
     check("no second countdown", sum(t.startswith("Police alarm: ") for t in pushes()) == 1, pushes())
     await settle(11)
     check("Off -> DRY RUN push", last_push("Police alarm - DRY RUN"), pushes())
     check("Off -> no create_alarm", not took("noonlight.create_alarm"))
-    hass.states.async_set("binary_sensor.motion", "off")
+    hass.states.async_set("binary_sensor.motion", "off", {"device_class": "motion"})
 
     # 3. Live + Cancel button
     await reset("Live")
@@ -273,6 +273,16 @@ async def main():
     check("missing integration: no result yet", not last_push("Noonlight: no response"), pushes())
     await settle(11)
     check("missing integration -> no-response warning", last_push("Noonlight: no response"), pushes())
+
+    # 12b. motion wording
+    await reset("Off")
+    hass.states.async_set("binary_sensor.motion", "off", {"device_class": "motion"})
+    hass.states.async_set(P, "armed_away"); await settle()
+    hass.states.async_set("binary_sensor.motion", "on", {"device_class": "motion"}); await settle(1)
+    check("motion trip says 'Motion detected'", hass.states.get("input_text.noonlight_last_trigger").state == "Motion detected: motion",
+          hass.states.get("input_text.noonlight_last_trigger"))
+    hass.states.async_set("binary_sensor.motion", "off", {"device_class": "motion"})
+    await settle(11)
 
     # 13. presence: everyone leaves -> armed away; arrive -> no auto disarm (default)
     await reset("Off")

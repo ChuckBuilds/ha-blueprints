@@ -67,8 +67,9 @@ blueprint:
     last_trigger_helper:
       name: Last tripped sensor helper
       description: >-
-        Optional input_text. Gets the sensor's name, read by the Noonlight
-        dispatch blueprint for the alarm cause.
+        Optional input_text. Gets what happened, e.g. "Front Door opened" or
+        "Motion detected: Kitchen Motion", read by the Noonlight dispatch
+        blueprint for the push and the alarm cause.
       default: []
       selector:
         entity:
@@ -94,6 +95,16 @@ conditions:
 variables:
   alarm_panel: !input alarm_panel
   last_trigger_helper: !input last_trigger_helper
+  # What happened, in words, for the push and the Noonlight operator:
+  # "Front Door opened", "Motion detected: Kitchen Motion". Motion puts the
+  # verb first because motion sensor names often already say "Motion".
+  # input_text holds 100 characters, so the name is shortened, not the verb.
+  what_happened: >-
+    {%- set kind = trigger.to_state.attributes.device_class | default('') -%}
+    {%- set name = trigger.to_state.name[:80] -%}
+    {%- if kind in ['door', 'window', 'garage_door', 'opening'] -%}{{ name }} opened
+    {%- elif kind in ['motion', 'occupancy', 'presence'] -%}Motion detected: {{ name }}
+    {%- else -%}{{ name }} triggered{%- endif -%}
 
 actions:
   - if: "{{ last_trigger_helper is string and last_trigger_helper != '' }}"
@@ -102,11 +113,11 @@ actions:
         target:
           entity_id: "{{ last_trigger_helper }}"
         data:
-          value: "{{ trigger.to_state.name[:100] }}"
+          value: "{{ what_happened }}"
   - action: logbook.log
     data:
       name: Alarm
-      message: "{{ trigger.to_state.name }} opened while {{ states(alarm_panel) }} - tripping panel"
+      message: "{{ what_happened }} while {{ states(alarm_panel) }} - tripping panel"
   - action: alarm_control_panel.alarm_trigger
     target:
       entity_id: !input alarm_panel
