@@ -48,6 +48,31 @@ written to the logbook.
 
 Read the whole story afterwards in **Logbook**, search `Noonlight`.
 
+## One wait, not two
+
+A manual alarm panel has its own entry delay (`delay_time`: the panel sits in
+`pending` before `triggered`), and the dispatch countdown starts only after
+that. Two waits, and only the second one notifies you.
+
+Recommended: set the panel's `delay_time` to `0` and make the dispatch
+**Countdown** the whole time you want (e.g. 90 s). A door opening then gives
+you one critical push right away, with the camera snapshot and three buttons:
+**Disarm** (Face ID), **Cancel - I'm safe**, **Dispatch now**.
+
+```yaml
+alarm_control_panel:
+  - platform: manual
+    name: Security Alarm
+    code: !secret alarm_code
+    arming_time: 60
+    delay_time: 0        # the dispatch countdown is the entry delay
+    trigger_time: 600
+    disarm_after_trigger: false
+```
+
+If you later add a siren, start it from "When handed to Noonlight", not "When
+the countdown starts", or it sounds on every normal arrival.
+
 ## Setup
 
 1. Install **Noonlight Enhanced** (HACS custom repository
@@ -88,8 +113,9 @@ Read the whole story afterwards in **Logbook**, search `Noonlight`.
 | Situation | What happens |
 |---|---|
 | Panel goes triggered / smoke sensor on | Critical push with Cancel and Dispatch now, countdown starts |
-| Cancel tapped | "Cancelled" push, Noonlight not called, your cancel actions run |
-| Panel disarmed during countdown | Same as Cancel |
+| **Disarm** tapped | iPhone asks for Face ID / passcode, then the panel is disarmed and Noonlight is not called. If the panel does not disarm (wrong code), a loud "Panel did NOT disarm" push follows; Noonlight is still not called |
+| **Cancel - I'm safe** tapped | Noonlight not called, panel **stays armed** (for when you are away and the camera shows nothing wrong) |
+| Panel disarmed during countdown (app / keypad) | Same as Disarm |
 | Dispatch now tapped | Skips the rest of the countdown |
 | Nobody responds | Dispatches when the countdown ends |
 | Second sensor during the countdown | Ignored - one alarm at a time per service |
@@ -107,6 +133,7 @@ Read the whole story afterwards in **Logbook**, search `Noonlight`.
 |---|---|---|
 | Trigger entities | - | Alarm panel (fires on `triggered`) and/or binary sensors / toggles (fire on `on`) |
 | Alarm panel (disarm cancels) | - | Optional. Usually the same panel as above |
+| Panel code (for the Disarm button) | - | Adds the Face ID-protected **Disarm** button. Not needed if the panel has no code. Stored in the automation like any input |
 | Last tripped sensor helper | - | Optional `input_text` from the sensor blueprint, so Noonlight hears "Back door" |
 | Service | Police | Police, Fire or Medical |
 | Mode helper | - | `input_select` with Off / Local / Test / Live |
@@ -114,7 +141,7 @@ Read the whole story afterwards in **Logbook**, search `Noonlight`.
 | Dispatcher instructions | - | Gate codes, pets, who lives here. The alarm cause goes in front |
 | Phones to notify | - | Pick Companion app phones; each gets the critical countdown push |
 | Other notify action | - | Optional, e.g. a notify group like `notify.family_phones` |
-| Countdown | 60 s | On top of the panel's entry delay. 30 s is reasonable for Fire |
+| Countdown | 60 s | On top of the panel's entry delay (see "One wait" below). 30 s is reasonable for Fire |
 | Camera | - | Optional. Snapshot in the push; long-press on iPhone for the live feed |
 | Open when tapped | - | Optional dashboard path, e.g. `/lovelace/security` |
 | Extra message line | - | Optional. Templates work: `Front door lock: {{ states('lock.front_door') }}` |
@@ -261,7 +288,7 @@ cancel. Put your real instructions back. Leave mode on Live.
 
 `tests/runtime_test.py` runs all four blueprints inside a headless Home
 Assistant with recorded (fake) notify, Noonlight and panel actions and plays
-through 45 scenarios. Needs `pip install homeassistant`; takes about 2.5
+through 53 scenarios. Needs `pip install homeassistant`; takes about 2.5
 minutes and exits non-zero on any failure.
 
 ## Disclaimer

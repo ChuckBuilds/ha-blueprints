@@ -57,6 +57,18 @@ blueprint:
             entity:
               filter:
                 - domain: alarm_control_panel
+        panel_code:
+          name: Panel code (for the Disarm button)
+          description: >-
+            Adds a Disarm button to the countdown push that disarms the panel
+            above and cancels the dispatch in one tap. On iPhone it asks for
+            Face ID / your passcode before it runs. Leave empty for no Disarm
+            button (unless the panel needs no code). Saved in the automation
+            like any other input.
+          default: ""
+          selector:
+            text:
+              type: password
         last_trigger_helper:
           name: Last tripped sensor helper
           description: >-
@@ -225,6 +237,11 @@ variables:
   countdown: !input countdown
   camera: !input camera
   tap_url: !input tap_url
+  panel_code: !input panel_code
+  # Disarm button only when there is a panel to disarm and a way to do it.
+  show_disarm: >-
+    {{ alarm_panel is string and alarm_panel != ''
+       and (panel_code != '' or state_attr(alarm_panel, 'code_format') is none) }}
   extra_message: !input extra_message
   service_name: "{{ service | title }}"
   nl_mode: "{{ states(mode_helper) }}"
@@ -275,6 +292,7 @@ actions:
   - variables:
       action_cancel: "{{ 'NOONLIGHT_PRECANCEL_' ~ context.id }}"
       action_dispatch: "{{ 'NOONLIGHT_DISPATCH_' ~ context.id }}"
+      action_disarm: "{{ 'NOONLIGHT_DISARM_' ~ context.id }}"
 
   - action: logbook.log
     data:
@@ -298,13 +316,20 @@ actions:
                   data:
                     title: "{{ service_name }} alarm: {{ cause_source | trim }}"
                     message: >-
-                      {% if nl_mode == 'Live' %}Calling Noonlight in {{ countdown }} s.
-                      {% elif nl_mode == 'Test' %}Calling Noonlight SANDBOX in {{ countdown }} s.
-                      {% elif nl_mode == 'Local' %}Simulating a dispatch in {{ countdown }} s.
+                      {% set stop = 'Disarm' if show_disarm else 'Cancel' %}
+                      {% if nl_mode == 'Live' %}{{ stop }}, or Noonlight is called in {{ countdown }} s.
+                      {% elif nl_mode == 'Test' %}{{ stop }}, or Noonlight SANDBOX is called in {{ countdown }} s.
+                      {% elif nl_mode == 'Local' %}{{ stop }}, or a dispatch is simulated in {{ countdown }} s.
                       {% else %}Dry run ({{ nl_mode }} mode) - Noonlight will not be called.{% endif %}
                       {{ extra_message }}
+                    # Disarm asks for Face ID / passcode on iPhone
+                    # (authenticationRequired; Android has no equivalent).
+                    # Cancel stops Noonlight but leaves the panel armed, for
+                    # when you are away and the camera shows nothing wrong.
                     data: >-
-                      {{ dict(dict(critical_data, tag=push_tag, actions=[
+                      {% set disarm = [{'action': action_disarm, 'title': 'Disarm',
+                                        'authenticationRequired': true}] if show_disarm else [] %}
+                      {{ dict(dict(critical_data, tag=push_tag, actions=disarm + [
                            {'action': action_cancel, 'title': "Cancel - I'm safe"},
                            {'action': action_dispatch, 'title': 'Dispatch now'}]), **push_media) }}
           - choose: []
@@ -324,6 +349,11 @@ actions:
                 event_data:
                   action: "{{ action_dispatch }}"
                 id: dispatch_now
+              - trigger: event
+                event_type: mobile_app_notification_action
+                event_data:
+                  action: "{{ action_disarm }}"
+                id: disarm_button
               - trigger: state
                 entity_id: !input alarm_panel
                 to: disarmed
@@ -359,12 +389,15 @@ actions:
           # ---- 3. Cancelled before dispatch --------------------------------
           - if:
               - condition: template
-                value_template: "{{ outcome in ['cancel', 'disarmed'] or panel_disarmed }}"
+                value_template: "{{ outcome in ['cancel', 'disarmed', 'disarm_button'] or panel_disarmed }}"
             then:
               - action: logbook.log
                 data:
                   name: "Noonlight {{ service_name }}"
-                  message: "cancelled before dispatch ({{ 'panel disarmed' if outcome != 'cancel' else 'Cancel button' }}). Noonlight was not called."
+                  message: >-
+                    cancelled before dispatch
+                    ({{ {'cancel': 'Cancel button', 'disarm_button': 'Disarm button'}.get(outcome, 'panel disarmed') }}).
+                    Noonlight was not called.
               # Side by side so a bad notify target can't skip your actions
               # (siren off) and a failing action can't skip the push.
               - parallel:
@@ -374,13 +407,51 @@ actions:
                         - action: "{{ repeat.item }}"
                           continue_on_error: true
                           data:
-                            title: "{{ service_name }} alarm cancelled"
-                            message: "{{ cause_source | trim }}. Cancelled before dispatch. Noonlight was NOT called."
+                            title: >-
+                              {{ service_name }} alarm
+                              {{ 'cancelled' if outcome == 'cancel' else 'disarmed' }}
+                            message: >-
+                              {{ cause_source | trim }}. Noonlight was NOT called.
+                              {{ 'The panel is still armed.' if outcome == 'cancel' else '' }}
                             data:
                               tag: "{{ push_tag }}"
                   - sequence:
                       - choose: []
                         default: !input on_cancelled_actions
+                  # Disarm button: disarm the panel, then make sure it took.
+                  # Noonlight is not being called either way.
+                  - sequence:
+                      - if: "{{ outcome == 'disarm_button' }}"
+                        then:
+                          - action: alarm_control_panel.alarm_disarm
+                            target:
+                              entity_id: "{{ alarm_panel }}"
+                            data: "{{ {'code': panel_code} if panel_code else {} }}"
+                            continue_on_error: true
+                          - wait_template: "{{ is_state(alarm_panel, 'disarmed') }}"
+                            timeout: "00:00:10"
+                            continue_on_timeout: true
+                          - if: "{{ not is_state(alarm_panel, 'disarmed') }}"
+                            then:
+                              - action: logbook.log
+                                data:
+                                  name: "Noonlight {{ service_name }}"
+                                  message: >-
+                                    Disarm button: panel did not disarm (check the panel code).
+                                    Noonlight was not called.
+                              - repeat:
+                                  for_each: "{{ notify_targets }}"
+                                  sequence:
+                                    - action: "{{ repeat.item }}"
+                                      continue_on_error: true
+                                      data:
+                                        title: Panel did NOT disarm
+                                        message: >-
+                                          Noonlight was not called, but
+                                          {{ state_attr(alarm_panel, 'friendly_name') }} is still
+                                          {{ states(alarm_panel) }}. Disarm it from the app or keypad,
+                                          and check the panel code in the dispatch automation.
+                                        data: "{{ dict(critical_data, tag=push_tag ~ '_disarm') }}"
               - stop: Cancelled before dispatch
 
           # ---- 4. Dispatch according to mode -------------------------------

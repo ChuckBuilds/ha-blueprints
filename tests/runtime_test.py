@@ -26,6 +26,7 @@ shutil.copytree(REPO / "blueprints" / "automation", Path(CFG) / "blueprints" / "
 calls = []          # (service, data)
 P = "alarm_control_panel.home_alarm"
 MODE = "input_select.noonlight_mode"
+PANEL_CODE = {"code": None}  # set to require a disarm code in the panel mock
 
 
 def bp(path, **inputs):
@@ -50,6 +51,10 @@ async def main():
             if name == "input_text.set_value":
                 for e in call.data["entity_id"]:
                     hass.states.async_set(e, call.data["value"])
+            if name == "alarm_control_panel.alarm_disarm" and PANEL_CODE["code"] is not None \
+                    and call.data.get("code") != PANEL_CODE["code"]:
+                from homeassistant.exceptions import ServiceValidationError
+                raise ServiceValidationError("Invalid alarm code provided")
             if name.startswith("alarm_control_panel."):
                 new = {"alarm_trigger": "triggered", "alarm_disarm": "disarmed",
                        "alarm_arm_away": "armed_away"}[name.split(".")[1]]
@@ -100,6 +105,7 @@ async def main():
         {"id": "police", "alias": "police", **bp("noonlight_dispatch.yaml", trigger_entities=[P], alarm_panel=P,
                              last_trigger_helper="input_text.noonlight_last_trigger", service="police",
                              mode_helper=MODE, sandbox_token="SBTOKEN", instructions="dog inside",
+                             panel_code="1234",
                              notify_devices=[phone.id], notify_service="notify.does_not_exist",
                              on_triggered_actions=[{"action": "notify.also_missing"}],
                              camera="camera.front", tap_url="/lovelace/security",
@@ -132,6 +138,9 @@ async def main():
     def countdown_actions():
         d = [d for n, d in calls if n == "notify.mobile_app_me" and "actions" in d.get("data", {})][-1]
         return [a["action"] for a in d["data"]["actions"]]
+
+    def button(prefix):
+        return [a for a in countdown_actions() if a.startswith(prefix)][0]
 
     async def settle(t=0.5):
         # plain sleep: block_till_done would wait out the whole countdown
@@ -181,7 +190,7 @@ async def main():
     # 3. Live + Cancel button
     await reset("Live")
     hass.states.async_set(P, "triggered"); await settle()
-    press(countdown_actions()[0]); await settle()
+    press(button("NOONLIGHT_PRECANCEL_")); await settle()
     check("Live cancel button -> cancelled push", last_push("Police alarm cancelled"), pushes())
     check("Live cancel button -> no create_alarm", not took("noonlight.create_alarm"))
 
@@ -192,12 +201,36 @@ async def main():
     check("stale cancel ignored", not last_push("Police alarm cancelled"))
     # 5. ... then disarm cancels
     hass.states.async_set(P, "disarmed"); await settle()
-    check("disarm cancels", last_push("Police alarm cancelled") and not took("noonlight.create_alarm"), pushes())
+    check("disarm cancels", last_push("Police alarm disarmed") and not took("noonlight.create_alarm"), pushes())
+
+    # 5b. Disarm button: Face ID protected, disarms the panel, Noonlight not called
+    await reset("Live")
+    PANEL_CODE["code"] = "1234"
+    hass.states.async_set(P, "triggered"); await settle()
+    acts = [d for n, d in calls if n == "notify.mobile_app_me" and "actions" in d.get("data", {})][-1]["data"]["actions"]
+    check("Disarm button first, Face ID required", acts[0]["title"] == "Disarm" and acts[0].get("authenticationRequired") is True, acts)
+    check("countdown push says Disarm", "Disarm, or Noonlight is called" in [d for n, d in calls if n == "notify.mobile_app_me"][0]["message"],
+          [d.get("message") for n, d in calls if n == "notify.mobile_app_me"])
+    press(button("NOONLIGHT_DISARM_")); await settle(1)
+    check("Disarm button disarms with the code", took("alarm_control_panel.alarm_disarm")
+          and took("alarm_control_panel.alarm_disarm")[0].get("code") == "1234", took("alarm_control_panel.alarm_disarm"))
+    check("Disarm button -> disarmed push, no Noonlight", last_push("Police alarm disarmed")
+          and not took("noonlight.create_alarm"), pushes())
+    check("panel really disarmed", hass.states.get(P).state == "disarmed")
+
+    # 5c. Disarm button with a wrong code: still no Noonlight, loud warning
+    await reset("Live")
+    PANEL_CODE["code"] = "9999"
+    hass.states.async_set(P, "triggered"); await settle()
+    press(button("NOONLIGHT_DISARM_")); await settle(11)
+    check("wrong code -> 'Panel did NOT disarm' push", last_push("Panel did NOT disarm"), pushes())
+    check("wrong code -> Noonlight still not called", not took("noonlight.create_alarm"), calls)
+    PANEL_CODE["code"] = None
 
     # 6. Live + Dispatch now -> production endpoint, no sandbox token, tracker reports ACTIVE
     await reset("Live")
     hass.states.async_set(P, "triggered"); await settle()
-    press(countdown_actions()[1]); await settle(1.5)
+    press(button("NOONLIGHT_DISPATCH_")); await settle(1.5)
     ca = took("noonlight.create_alarm")
     check("Live dispatch-now calls create_alarm once", len(ca) == 1, ca)
     check("bad notify target + failing custom action don't stop dispatch", len(ca) == 1, ca)
@@ -212,7 +245,7 @@ async def main():
               and data.get("clickAction") == "/lovelace/security", data)
         check("extra message template rendered", "Lock: locked" in msg, msg)
         check("countdown push still critical with buttons", data.get("push", {}).get("interruption-level") == "critical"
-              and len(data.get("actions", [])) == 2, data)
+              and [a["title"] for a in data.get("actions", [])] == ["Disarm", "Cancel - I'm safe", "Dispatch now"], data)
     check("Live uses production endpoint", ca and ca[0].get("api_endpoint") == "https://api.noonlight.com/dispatch/v1", ca)
     check("Live sends no sandbox token", ca and "server_token_override" not in ca[0], ca)
     check("alarm_cause names the sensor", ca and "front door" in ca[0].get("alarm_cause", ""), ca)
@@ -235,6 +268,8 @@ async def main():
     await reset("Test")
     hass.states.async_set("binary_sensor.smoke", "on"); await settle(11.5)
     check("Fire countdown push (notify_service only)", any(t.startswith("Fire alarm: ") for t in pushes()), pushes())
+    check("no Disarm button without a panel", not [a for a in countdown_actions() if a.startswith("NOONLIGHT_DISARM_")],
+          countdown_actions())
     check("missing token -> FAILED push", last_push("Noonlight alarm FAILED"), pushes())
 
     # 9. invalid mode -> NOT SENT
