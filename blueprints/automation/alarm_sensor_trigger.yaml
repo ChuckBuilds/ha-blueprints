@@ -1,0 +1,111 @@
+blueprint:
+  name: Alarm sensor trigger (sensors trip the alarm panel)
+  description: >-
+    Trips an alarm panel when a door / window / motion sensor opens while the
+    panel is armed.
+
+    False-alarm guards:
+      * Only an "off" -> "on" change counts. A sensor coming back from
+        unavailable (reboot, Zigbee/Z-Wave drop, battery swap) is ignored.
+      * The sensor must stay open for the debounce time.
+      * Only the armed states you pick count (e.g. away + night, not home).
+      * The panel's own entry delay (manual panel "delay_time") still applies,
+        so you get time to disarm before it goes "triggered".
+
+    Optionally records which sensor tripped, so the Noonlight dispatch can
+    tell the operator "Back door" instead of just "Alarm panel".
+  domain: automation
+  homeassistant:
+    min_version: 2024.10.0
+  input:
+    alarm_panel:
+      name: Alarm panel
+      selector:
+        entity:
+          filter:
+            - domain: alarm_control_panel
+    sensors:
+      name: Sensors
+      description: Doors, windows, motion. Must report "on" when open / detected.
+      selector:
+        entity:
+          multiple: true
+          filter:
+            - domain: binary_sensor
+    armed_states:
+      name: Armed states that count
+      description: >-
+        Sensors only trip the panel in these states. Tip: make separate
+        automations for perimeter sensors (all modes) and interior motion
+        (away only).
+      default: [armed_away, armed_night]
+      selector:
+        select:
+          multiple: true
+          options:
+            - label: Armed away
+              value: armed_away
+            - label: Armed home
+              value: armed_home
+            - label: Armed night
+              value: armed_night
+            - label: Armed vacation
+              value: armed_vacation
+            - label: Armed custom bypass
+              value: armed_custom_bypass
+    debounce:
+      name: Debounce
+      description: Seconds the sensor must stay open before it counts. 0 = instant.
+      default: 1
+      selector:
+        number:
+          min: 0
+          max: 30
+          unit_of_measurement: seconds
+          mode: box
+    last_trigger_helper:
+      name: Last tripped sensor helper
+      description: >-
+        Optional input_text. Gets the sensor's name, read by the Noonlight
+        dispatch blueprint for the alarm cause.
+      default: []
+      selector:
+        entity:
+          filter:
+            - domain: input_text
+
+mode: single
+max_exceeded: silent
+
+triggers:
+  - trigger: state
+    entity_id: !input sensors
+    from: "off"
+    to: "on"
+    for:
+      seconds: !input debounce
+
+conditions:
+  - condition: state
+    entity_id: !input alarm_panel
+    state: !input armed_states
+
+variables:
+  alarm_panel: !input alarm_panel
+  last_trigger_helper: !input last_trigger_helper
+
+actions:
+  - if: "{{ last_trigger_helper is string and last_trigger_helper != '' }}"
+    then:
+      - action: input_text.set_value
+        target:
+          entity_id: "{{ last_trigger_helper }}"
+        data:
+          value: "{{ trigger.to_state.name[:100] }}"
+  - action: logbook.log
+    data:
+      name: Alarm
+      message: "{{ trigger.to_state.name }} opened while {{ states(alarm_panel) }} - tripping panel"
+  - action: alarm_control_panel.alarm_trigger
+    target:
+      entity_id: !input alarm_panel
