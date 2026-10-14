@@ -10,6 +10,37 @@ input_boolean:
     name: Door Party Mode
     icon: mdi:party-popper
 
+# ---------------------------------------------------------------------------
+# Leak detection - alert, countdown, shut off the water
+#
+# One timer per leak sensor, named `timer.leak_snooze_` + the sensor's object
+# id. The blueprint builds that name itself, so the two have to line up exactly
+# or Cancel silently stops snoozing:
+#
+#   binary_sensor.kitchen_sink_water_leak
+#     -> timer.leak_snooze_kitchen_sink_water_leak
+#
+# Rename these to match YOUR sensors. `restore: true` matters - without it a
+# restart during the snooze window re-arms a sensor sitting in a puddle you are
+# already dealing with, and it alerts again immediately.
+#
+# Skipping this block is safe but degraded: alerts still fire and the water is
+# still shut off, only the Cancel button's snooze stops working. The blueprint
+# says so in the cancel confirmation and logs a warning naming the missing
+# timer.
+timer:
+  leak_snooze_kitchen_sink_water_leak:
+    name: Leak snooze - Kitchen Sink
+    duration: "00:30:00"
+    restore: true
+  leak_snooze_laundry_room_water_leak:
+    name: Leak snooze - Laundry Room
+    duration: "00:30:00"
+    restore: true
+  leak_snooze_water_heater_water_leak:
+    name: Leak snooze - Water Heater
+    duration: "00:30:00"
+    restore: true
   # Bed-exit predictive bathroom lights. If you already have a sleep-mode
   # toggle, use that instead - the blueprint does not care what flips it, only
   # that it is on while you are in bed.
