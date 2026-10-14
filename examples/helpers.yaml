@@ -10,6 +10,13 @@ input_boolean:
     name: Door Party Mode
     icon: mdi:party-popper
 
+  # Bed-exit predictive bathroom lights. If you already have a sleep-mode
+  # toggle, use that instead - the blueprint does not care what flips it, only
+  # that it is on while you are in bed.
+  sleepmode:
+    name: SleepMode
+    icon: mdi:sleep
+
 # ---------------------------------------------------------------------------
 # Leak detection - alert, countdown, shut off the water
 #
@@ -41,9 +48,3 @@ timer:
     name: Leak snooze - Water Heater
     duration: "00:30:00"
     restore: true
-  # Bed-exit predictive bathroom lights. If you already have a sleep-mode
-  # toggle, use that instead - the blueprint does not care what flips it, only
-  # that it is on while you are in bed.
-  sleepmode:
-    name: SleepMode
-    icon: mdi:sleep
