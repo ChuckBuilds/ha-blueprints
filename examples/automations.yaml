@@ -46,3 +46,31 @@
     - action: input_boolean.turn_off
       target:
         entity_id: input_boolean.door_party_mode
+
+# ---------------------------------------------------------------------------
+# Bed-exit predictive bathroom lights
+# ---------------------------------------------------------------------------
+# One automation per bathroom. The bed sensors can be shared between several
+# bathrooms - an ensuite and a hall bathroom can both watch the same bed.
+
+- id: master_bath_bed_exit_lights
+  alias: Master Bath - bed-exit predictive lights
+  description: Pre-lights the master bath on bed exit, then behaves as a motion light.
+  use_blueprint:
+    path: ChuckBuilds/bed_exit_bathroom_lights.yaml
+    input:
+      motion_sensor: binary_sensor.masterbathmotion_occupancy
+      bed_sensors:
+        - binary_sensor.bed_sensor_left_bed_occupancy
+        - binary_sensor.bed_sensor_right_bed_occupancy
+      night_mode: input_boolean.sleepmode
+      night_start: "21:00:00"
+      morning_time: "07:00:00"
+      dim_light: light.masterbathceiling
+      full_lights:
+        - light.bathroom_lights
+      prelight_pct: 8
+      dim_pct: 20
+      confirm_window: 90
+      night_off_delay: 3
+      day_grace: 5
