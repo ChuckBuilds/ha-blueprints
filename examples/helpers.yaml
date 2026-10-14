@@ -2,6 +2,7 @@
 # If you would rather use the UI: Settings > Devices & services > Helpers >
 # Create helper > Toggle, and name them so the entity IDs match below.
 input_boolean:
+  # Door-aware auto-lock
   door_guest_mode:
     name: Door Guest Mode
     icon: mdi:account-clock
@@ -40,3 +41,9 @@ timer:
     name: Leak snooze - Water Heater
     duration: "00:30:00"
     restore: true
+  # Bed-exit predictive bathroom lights. If you already have a sleep-mode
+  # toggle, use that instead - the blueprint does not care what flips it, only
+  # that it is on while you are in bed.
+  sleepmode:
+    name: SleepMode
+    icon: mdi:sleep
