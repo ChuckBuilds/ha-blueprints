@@ -96,15 +96,20 @@ variables:
   alarm_panel: !input alarm_panel
   last_trigger_helper: !input last_trigger_helper
   # What happened, in words, for the push and the Noonlight operator:
-  # "Front Door opened", "Motion detected: Kitchen Motion". Motion puts the
-  # verb first because motion sensor names often already say "Motion".
-  # input_text holds 100 characters, so the name is shortened, not the verb.
+  # "Front Door opened (armed night)", "Motion detected: Kitchen Motion
+  # (armed away)". Motion puts the verb first because motion sensor names
+  # often already say "Motion". The armed mode tells the operator whether
+  # people should be home. Rendered when the automation starts, i.e. before
+  # the panel is tripped, so the panel still shows the mode.
+  # input_text holds 100 characters: the name is shortened to fit, never the
+  # verb or the mode (longest: "Motion detected: " + 60 + " (armed custom bypass)").
   what_happened: >-
     {%- set kind = trigger.to_state.attributes.device_class | default('') -%}
-    {%- set name = trigger.to_state.name[:80] -%}
+    {%- set name = trigger.to_state.name[:60] -%}
+    {%- set mode = states(alarm_panel) | replace('_', ' ') -%}
     {%- if kind in ['door', 'window', 'garage_door', 'opening'] -%}{{ name }} opened
     {%- elif kind in ['motion', 'occupancy', 'presence'] -%}Motion detected: {{ name }}
-    {%- else -%}{{ name }} triggered{%- endif -%}
+    {%- else -%}{{ name }} triggered{%- endif %} ({{ mode }})
 
 actions:
   - if: "{{ last_trigger_helper is string and last_trigger_helper != '' }}"
@@ -117,7 +122,7 @@ actions:
   - action: logbook.log
     data:
       name: Alarm
-      message: "{{ what_happened }} while {{ states(alarm_panel) }} - tripping panel"
+      message: "{{ what_happened }} - tripping panel"
   - action: alarm_control_panel.alarm_trigger
     target:
       entity_id: !input alarm_panel

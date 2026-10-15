@@ -186,7 +186,7 @@ async def main():
     hass.states.async_set(P, "armed_away")
     hass.states.async_set("binary_sensor.front_door", "on", {"device_class": "door"}); await settle(1)
     check("sensor trips panel", took("alarm_control_panel.alarm_trigger"))
-    check("trip records what happened", hass.states.get("input_text.noonlight_last_trigger").state == "front door opened",
+    check("trip records what happened", hass.states.get("input_text.noonlight_last_trigger").state == "front door opened (armed away)",
           hass.states.get("input_text.noonlight_last_trigger"))
     check("countdown push sent", any(t.startswith("Police alarm: ") for t in pushes()), pushes())
     # dedup: second sensor during countdown
@@ -342,7 +342,7 @@ async def main():
     hass.states.async_set("binary_sensor.motion", "off", {"device_class": "motion"})
     hass.states.async_set(P, "armed_away"); await settle()
     hass.states.async_set("binary_sensor.motion", "on", {"device_class": "motion"}); await settle(1)
-    check("motion trip says 'Motion detected'", hass.states.get("input_text.noonlight_last_trigger").state == "Motion detected: motion",
+    check("motion trip says 'Motion detected'", hass.states.get("input_text.noonlight_last_trigger").state == "Motion detected: motion (armed away)",
           hass.states.get("input_text.noonlight_last_trigger"))
     hass.states.async_set("binary_sensor.motion", "off", {"device_class": "motion"})
     await settle(11)
