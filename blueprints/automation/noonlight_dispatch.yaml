@@ -69,6 +69,24 @@ blueprint:
           selector:
             text:
               type: password
+        show_disarm_button:
+          name: Show Disarm button
+          description: >-
+            Turn off to never show the Disarm button, even when a panel code
+            is set or the panel needs no code.
+          default: true
+          selector:
+            boolean:
+        disarm_requires_unlock:
+          name: Require phone unlock to Disarm
+          description: >-
+            The phone must be unlocked (Face ID / passcode on iPhone,
+            fingerprint / face / PIN on Android 12+) before Disarm runs.
+            Turning this off lets Disarm work straight from the lock screen,
+            so anyone holding your phone could disarm the house.
+          default: true
+          selector:
+            boolean:
         last_trigger_helper:
           name: Last tripped sensor helper
           description: >-
@@ -238,9 +256,11 @@ variables:
   camera: !input camera
   tap_url: !input tap_url
   panel_code: !input panel_code
+  show_disarm_button: !input show_disarm_button
+  disarm_requires_unlock: !input disarm_requires_unlock
   # Disarm button only when there is a panel to disarm and a way to do it.
   show_disarm: >-
-    {{ alarm_panel is string and alarm_panel != ''
+    {{ show_disarm_button and alarm_panel is string and alarm_panel != ''
        and (panel_code != '' or state_attr(alarm_panel, 'code_format') is none) }}
   extra_message: !input extra_message
   service_name: "{{ service | title }}"
@@ -329,7 +349,7 @@ actions:
                     # when you are away and the camera shows nothing wrong.
                     data: >-
                       {% set disarm = [{'action': action_disarm, 'title': 'Disarm',
-                                        'authenticationRequired': true}] if show_disarm else [] %}
+                                        'authenticationRequired': disarm_requires_unlock}] if show_disarm else [] %}
                       {{ dict(dict(critical_data, tag=push_tag, actions=disarm + [
                            {'action': action_cancel, 'title': "Cancel - I'm safe"},
                            {'action': action_dispatch, 'title': 'Dispatch now'}]), **push_media) }}

@@ -134,6 +134,8 @@ the countdown starts", or it sounds on every normal arrival.
 | Trigger entities | - | Alarm panel (fires on `triggered`) and/or binary sensors / toggles (fire on `on`) |
 | Alarm panel (disarm cancels) | - | Optional. Usually the same panel as above |
 | Panel code (for the Disarm button) | - | Adds the **Disarm** button, which needs the phone unlocked (iPhone, Android 12+). Not needed if the panel has no code. Stored in the automation like any input |
+| Show Disarm button | On | Off hides it, even with a code set or a code-less panel |
+| Require phone unlock to Disarm | On | Off lets Disarm run from the lock screen: anyone holding the phone could disarm |
 | Last tripped sensor helper | - | Optional `input_text` from the sensor blueprint, so Noonlight hears "Back door" |
 | Service | Police | Police, Fire or Medical |
 | Mode helper | - | `input_select` with Off / Local / Test / Live |
@@ -288,7 +290,7 @@ cancel. Put your real instructions back. Leave mode on Live.
 
 `tests/runtime_test.py` runs all four blueprints inside a headless Home
 Assistant with recorded (fake) notify, Noonlight and panel actions and plays
-through 53 scenarios. Needs `pip install homeassistant`; takes about 2.5
+through 56 scenarios. Needs `pip install homeassistant`; takes about 2.5
 minutes and exits non-zero on any failure.
 
 ## Disclaimer

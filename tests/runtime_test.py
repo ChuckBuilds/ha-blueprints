@@ -26,6 +26,8 @@ shutil.copytree(REPO / "blueprints" / "automation", Path(CFG) / "blueprints" / "
 calls = []          # (service, data)
 P = "alarm_control_panel.home_alarm"
 MODE = "input_select.noonlight_mode"
+P_NOUNLOCK = "alarm_control_panel.no_unlock_panel"
+P_NOBUTTON = "alarm_control_panel.no_button_panel"
 PANEL_CODE = {"code": None}  # set to require a disarm code in the panel mock
 
 
@@ -110,6 +112,14 @@ async def main():
                              on_triggered_actions=[{"action": "notify.also_missing"}],
                              camera="camera.front", tap_url="/lovelace/security",
                              extra_message="Lock: {{ states('lock.front') }}", countdown=10)},
+        {"id": "medical_nounlock", "alias": "medical_nounlock", **bp("noonlight_dispatch.yaml",
+                trigger_entities=[P_NOUNLOCK], alarm_panel=P_NOUNLOCK, service="medical", mode_helper=MODE,
+                notify_service="notify.mobile_app_me", panel_code="1234", disarm_requires_unlock=False,
+                countdown=10)},
+        {"id": "medical_nobutton", "alias": "medical_nobutton", **bp("noonlight_dispatch.yaml",
+                trigger_entities=[P_NOBUTTON], alarm_panel=P_NOBUTTON, service="medical", mode_helper=MODE,
+                notify_service="notify.mobile_app_me", panel_code="1234", show_disarm_button=False,
+                countdown=10)},
         {"id": "fire", "alias": "fire", **bp("noonlight_dispatch.yaml", trigger_entities=["binary_sensor.smoke"], service="fire",
                            mode_helper=MODE, notify_service="notify.mobile_app_me", countdown=10)},
         {"id": "tracker", "alias": "tracker", **bp("noonlight_status_tracker.yaml", notify_devices=[phone.id],
@@ -226,6 +236,24 @@ async def main():
     check("wrong code -> 'Panel did NOT disarm' push", last_push("Panel did NOT disarm"), pushes())
     check("wrong code -> Noonlight still not called", not took("noonlight.create_alarm"), calls)
     PANEL_CODE["code"] = None
+
+    # 5d. Disarm options: unlock requirement off, button hidden
+    await reset("Local")
+    hass.states.async_set(P_NOUNLOCK, "disarmed"); hass.states.async_set(P_NOBUTTON, "disarmed"); await settle()
+    calls.clear()
+    hass.states.async_set(P_NOUNLOCK, "triggered"); await settle()
+    acts = countdown_actions()
+    d = [d for n, d in calls if n == "notify.mobile_app_me" and "actions" in d.get("data", {})][-1]["data"]["actions"]
+    check("unlock off -> Disarm button without authenticationRequired", d[0]["title"] == "Disarm"
+          and d[0].get("authenticationRequired") is False, d)
+    hass.states.async_set(P_NOUNLOCK, "disarmed"); await settle(1)
+    calls.clear()
+    hass.states.async_set(P_NOBUTTON, "triggered"); await settle()
+    d = [d for n, d in calls if n == "notify.mobile_app_me" and "actions" in d.get("data", {})][-1]
+    check("button hidden -> no Disarm button", [a["title"] for a in d["data"]["actions"]] == ["Cancel - I'm safe", "Dispatch now"],
+          d["data"]["actions"])
+    check("button hidden -> push says Cancel", d["message"].startswith("Cancel, or a dispatch is simulated"), d["message"])
+    hass.states.async_set(P_NOBUTTON, "disarmed"); await settle(1)
 
     # 6. Live + Dispatch now -> production endpoint, no sandbox token, tracker reports ACTIVE
     await reset("Live")
