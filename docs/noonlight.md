@@ -198,13 +198,13 @@ the countdown starts", or it sounds on every normal arrival.
 | Debounce | 1 s | Sensor must stay open this long |
 | Last tripped sensor helper | - | Optional; feeds the push title and the Noonlight alarm cause |
 
-The helper gets what happened, worded by the sensor's type, so the push and the Noonlight operator read `Police alarm: Front Door opened`:
+The helper gets what happened, worded by the sensor's type, plus the mode the panel was armed in, so the push and the Noonlight operator read `Police alarm: Front Door opened (armed night)`. The mode tells the operator whether people should be home: night means asleep inside, away means nobody should be there.
 
 | Sensor type (device class) | Wording |
 |---|---|
-| door, window, garage door, opening | `Front Door opened` |
-| motion, occupancy, presence | `Motion detected: Kitchen Motion` |
-| anything else | `<name> triggered` |
+| door, window, garage door, opening | `Front Door opened (armed night)` |
+| motion, occupancy, presence | `Motion detected: Kitchen Motion (armed away)` |
+| anything else | `<name> triggered (armed home)` |
 
 The name is the sensor's friendly name, so name your sensors the way you want them read out (e.g. "Front Door", not "Front Door Door").
 
