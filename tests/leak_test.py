@@ -44,7 +44,7 @@ async def main():
         return handler
 
     for svc in ["notify.mobile_app_good", "switch.turn_off", "system_log.write", "timer.start",
-                "logbook.log", "persistent_notification.create"]:
+                "logbook.log", "persistent_notification.create", "persistent_notification.dismiss"]:
         d, s = svc.split(".")
         hass.services.async_register(d, s, rec(svc))
 
@@ -168,6 +168,17 @@ async def main():
     titles = [d.get("title", "") for d in pushes() if "Leak detected" in d.get("title", "")]
     check("two sensors: two alerts", len(titles) == 2, titles)
     await asyncio.sleep(6)
+
+    # 6b. Missing-phone check
+    await reset()
+    hass.bus.async_fire("automation_reloaded", {}); await asyncio.sleep(1)
+    check("phone present -> warning cleared",
+          "missing_phone_automation.leak" in [d["notification_id"] for d in took("persistent_notification.dismiss")], calls)
+    calls.clear()
+    device_registry.async_get(hass).async_remove_device(phone.id); await asyncio.sleep(1)
+    check("phone removed -> warning raised",
+          "missing_phone_automation.leak" in [d["notification_id"] for d in took("persistent_notification.create")], calls)
+    check("phone check does not touch the valve or alert", not took("switch.turn_off") and not pushes(), calls)
 
     # 7. Typed actions only, bad one first: pushes after it are lost, the valve is not.
     await reset()

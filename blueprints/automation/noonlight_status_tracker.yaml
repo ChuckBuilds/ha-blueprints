@@ -133,6 +133,20 @@ triggers:
     event_type: mobile_app_notification_action
     id: cancel_button
 
+  # Phone check: re-check the picked phones when HA starts, when
+  # automations reload (e.g. this one is saved) and when a device is removed.
+  - trigger: homeassistant
+    event: start
+    id: phone_check
+  - trigger: event
+    event_type: automation_reloaded
+    id: phone_check
+  - trigger: event
+    event_type: device_registry_updated
+    event_data:
+      action: remove
+    id: phone_check
+
 conditions:
   # Ignore every other notification button in the house.
   - condition: template
@@ -166,7 +180,7 @@ variables:
   result_timeout: !input result_timeout
   push_webhooks: !input push_webhooks
   status_card: !input status_card
-  d: "{{ trigger.event.data }}"
+  d: "{{ trigger.event.data if trigger.id != 'phone_check' else {} }}"
   env: "{{ d.environment | default('') }}"
   env_label: >-
     {{ {'production': 'LIVE', 'sandbox': 'SANDBOX', 'local': 'LOCAL TEST'}.get(env, env | upper) }}
@@ -183,6 +197,37 @@ variables:
     channel: alarm_stream
 
 actions:
+  # ---- Phone check (its own triggers only; alarm runs skip this) -------
+  # A phone that was removed or re-registered (new device) gets no pushes,
+  # silently. Say so in a persistent notification until it is re-picked.
+  - if: "{{ trigger.id == 'phone_check' }}"
+    then:
+      - variables:
+          missing_phones: >-
+            {% set ns = namespace(n=0) %}
+            {% for d in (notify_devices + household_devices) if not device_attr(d, 'name') %}{% set ns.n = ns.n + 1 %}{% endfor %}
+            {{ ns.n }}
+      - if: "{{ missing_phones | int > 0 }}"
+        then:
+          - action: persistent_notification.create
+            data:
+              notification_id: "{{ 'missing_phone_' ~ this.entity_id }}"
+              title: Phone missing from an alarm automation
+              message: >-
+                {{ missing_phones }} phone(s) picked in "{{ this.attributes.friendly_name }}"
+                no longer exist (removed, or the Companion app registered again as a
+                new device), so they get no pushes. Open the automation and pick the
+                phone again.
+          - action: logbook.log
+            data:
+              name: "{{ this.attributes.friendly_name }}"
+              message: "{{ missing_phones }} picked phone(s) no longer exist - re-pick them"
+        else:
+          - action: persistent_notification.dismiss
+            data:
+              notification_id: "{{ 'missing_phone_' ~ this.entity_id }}"
+      - stop: Phone check only
+
   - choose:
       # ---- attempted: the integration started talking to Noonlight -------
       - conditions: "{{ trigger.id == 'attempted' }}"

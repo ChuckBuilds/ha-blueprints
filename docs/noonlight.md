@@ -160,6 +160,8 @@ the countdown starts", or it sounds on every normal arrival.
 - Fire and Medical usually have no panel: leave "Alarm panel" empty and
   cancel with the button.
 
+**Missing phone warning.** If a phone you picked is removed, or the Companion app registers again as a new device, the automation raises a persistent notification naming itself (checked at start, on reload and when a device is removed). Re-pick the phone to clear it.
+
 ## Noonlight status tracker
 
 `blueprints/automation/noonlight_status_tracker.yaml`
@@ -290,7 +292,7 @@ cancel. Put your real instructions back. Leave mode on Live.
 
 `tests/runtime_test.py` runs all four blueprints inside a headless Home
 Assistant with recorded (fake) notify, Noonlight and panel actions and plays
-through 56 scenarios. Needs `pip install homeassistant`; takes about 2.5
+through 61 scenarios. Needs `pip install homeassistant`; takes about 2.5
 minutes and exits non-zero on any failure.
 
 ## Disclaimer

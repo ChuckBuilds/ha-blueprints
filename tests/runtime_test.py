@@ -77,7 +77,7 @@ async def main():
                 hass.bus.async_fire("noonlight_alarm_canceled", {"alarm_id": call.data["alarm_id"], "environment": "production"})
         return handler
 
-    for svc in ["notify.mobile_app_me", "notify.family", "logbook.log", "persistent_notification.create",
+    for svc in ["notify.mobile_app_me", "notify.family", "logbook.log", "persistent_notification.create", "persistent_notification.dismiss",
                 "input_text.set_value", "noonlight.create_alarm", "noonlight.cancel_alarm",
                 "alarm_control_panel.alarm_trigger", "alarm_control_panel.alarm_disarm",
                 "alarm_control_panel.alarm_arm_away"]:
@@ -346,6 +346,21 @@ async def main():
           hass.states.get("input_text.noonlight_last_trigger"))
     hass.states.async_set("binary_sensor.motion", "off", {"device_class": "motion"})
     await settle(11)
+
+    # 12d. Missing-phone check: reload with the phone present clears; removing it warns
+    await reset("Live")
+    hass.bus.async_fire("automation_reloaded", {}); await settle(1)
+    dism = [d["notification_id"] for d in took("persistent_notification.dismiss")]
+    check("phone present -> warning cleared (police, tracker)",
+          "missing_phone_automation.police" in dism and "missing_phone_automation.tracker" in dism, dism)
+    calls.clear()
+    device_registry.async_get(hass).async_remove_device(phone.id); await settle(1)
+    made = {d["notification_id"]: d for d in took("persistent_notification.create")}
+    check("phone removed -> warning for dispatch", "missing_phone_automation.police" in made, list(made))
+    check("phone removed -> warning for tracker", "missing_phone_automation.tracker" in made, list(made))
+    check("warning names the automation", "police" in made.get("missing_phone_automation.police", {}).get("message", ""),
+          made.get("missing_phone_automation.police"))
+    check("phone check sends no alarm push and no dispatch", not pushes() and not took("noonlight.create_alarm"), calls)
 
     # 13. presence: everyone leaves -> armed away; arrive -> no auto disarm (default)
     await reset("Off")
