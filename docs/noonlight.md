@@ -260,10 +260,10 @@ each person the Companion app plus a router or Bluetooth tracker.
 | Only disarm from these modes | Away, Vacation | |
 | Phones to notify / Other notify action | - | |
 
-`tests/presence_test.py` runs it in a headless Home Assistant through 20
+`tests/presence_test.py` runs it in a headless Home Assistant through 23
 scenarios: flapping, guest mode, motion before and after leaving, open
 windows, a refusing panel, Ask-me arrival, Night mode, arrival blips, and
-the older zone + auto-disarm setup.
+the older zone + auto-disarm setup, and the missing-phone warning.
 
 ## Cancelling an alarm
 

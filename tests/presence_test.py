@@ -51,7 +51,8 @@ async def main():
                         hass.states.async_set(e, verb.replace("alarm_arm_", "armed_"))
         return handler
 
-    for svc in ["notify.mobile_app_me", "logbook.log", "alarm_control_panel.alarm_arm_away",
+    for svc in ["notify.mobile_app_me", "logbook.log", "persistent_notification.create",
+                "persistent_notification.dismiss", "alarm_control_panel.alarm_arm_away",
                 "alarm_control_panel.alarm_arm_vacation", "alarm_control_panel.alarm_disarm"]:
         d, s = svc.split(".")
         hass.services.async_register(d, s, rec(svc))
@@ -222,6 +223,17 @@ async def main():
     hass.states.async_set("zone.home", "1"); await asyncio.sleep(1)
     check("old auto_disarm still disarms automatically", hass.states.get(P_ZONE).state == "disarmed",
           hass.states.get(P_ZONE))
+
+    # 11. Missing-phone check: reload clears, removing the phone warns, nothing else happens
+    await reset()
+    hass.bus.async_fire("automation_reloaded", {}); await asyncio.sleep(1)
+    check("phone present -> warning cleared",
+          "missing_phone_automation.pres" in [d["notification_id"] for d in took("persistent_notification.dismiss")], calls)
+    calls.clear()
+    device_registry.async_get(hass).async_remove_device(phone.id); await asyncio.sleep(1)
+    check("phone removed -> warning raised",
+          "missing_phone_automation.pres" in [d["notification_id"] for d in took("persistent_notification.create")], calls)
+    check("phone check does not arm or push", not pushes() and not took("alarm_control_panel.alarm_arm_away"), calls)
 
     await hass.async_stop(force=True)
     print(f"\n{sum(ok)}/{len(ok)} passed")
