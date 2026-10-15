@@ -217,15 +217,53 @@ reboot or radio drop never trip the panel.
 
 `blueprints/automation/alarm_presence_arm_disarm.yaml`
 
+Arms when the people you pick have all left, and can ask you to disarm
+(or disarm automatically) when one of them comes home. Presence comes from
+Home Assistant's person entities ("home" / away). For better accuracy, give
+each person the Companion app plus a router or Bluetooth tracker.
+
+### Behaviour
+
+| Situation | What happens |
+|---|---|
+| All picked people away for "Arm after" | Arms (Away by default), push "Alarm armed (away)" |
+| One of them comes back before then (GPS / Wi-Fi flapping) | Nothing |
+| Guest mode switch on | Not armed, push says why |
+| Motion after everyone left (past the exit grace), or a motion sensor still on | Not armed, push names the sensor, with an **Arm anyway** button |
+| Your own walk out past a motion sensor | Ignored (exit grace) |
+| A listed door / window open | Not armed and named (or armed anyway and named, your choice) |
+| Panel refuses to arm (e.g. Alarmo with open sensors, wrong code) | Push "Alarm did NOT arm" |
+| Someone arrives, "Ask me" | Push "Alice is home - disarm?" with a **Disarm** button that needs the phone unlocked |
+| Someone arrives, "Disarm automatically" | Disarmed, push says who arrived |
+| Arrival while armed Night / Home (default) | Nothing: people inside on purpose |
+| Arrival while the alarm is going off (pending / triggered) | Never touched |
+| Phone flips to "home" briefly | Ignored if shorter than "Count as arrived after" |
+
+### Inputs
+
 | Input | Default | Notes |
 |---|---|---|
 | Alarm panel | - | |
-| Zone | `zone.home` | Arms when its person count hits 0 |
+| People | - | Arms when all are away, reacts when any arrives. Empty = use the zone count |
+| Zone | `zone.home` | Only used when no people are picked |
+| Panel code | - | Only if your panel needs one to arm / disarm |
 | Arm as | Away | |
-| Arm after everyone has been gone for | 5 min | |
-| Disarm when someone arrives | **Off** | A stolen phone or GPS glitch would disarm the house. Never disarms a panel that is already `triggered` |
-| Panel code | - | Only if your panel needs one |
-| Notify action | - | Optional |
+| Arm after everyone has been gone for | 5 min | Higher = fewer false arms from flapping |
+| Guest mode switch | - | `input_boolean`; on = never auto-arm |
+| Motion sensors | - | Someone home without a tracked phone |
+| Ignore motion for the first | 2 min | Your walk out. Keep it shorter than "Arm after" |
+| Doors and windows to check | - | Checked just before arming |
+| If one is open | Don't arm | Or arm anyway; both tell you what is open |
+| On arrival | Do nothing | Ask me (Disarm button, unlock required) or Disarm automatically (a stolen phone could disarm) |
+| Disarm automatically (older setting) | Off | Kept for older automations; On = automatic |
+| Count as arrived after | 0 s | 30-60 s rides out zone-edge flapping |
+| Only disarm from these modes | Away, Vacation | |
+| Phones to notify / Other notify action | - | |
+
+`tests/presence_test.py` runs it in a headless Home Assistant through 20
+scenarios: flapping, guest mode, motion before and after leaving, open
+windows, a refusing panel, Ask-me arrival, Night mode, arrival blips, and
+the older zone + auto-disarm setup.
 
 ## Cancelling an alarm
 

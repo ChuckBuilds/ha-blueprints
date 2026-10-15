@@ -1,17 +1,32 @@
 blueprint:
   name: Alarm presence arm / disarm
   description: >-
-    Arms the alarm panel when everyone has left, and (optionally) disarms it
-    when someone comes home.
+    Arms the alarm panel when the people you pick have all left, and can ask
+    you to disarm (or disarm automatically) when one of them comes home.
 
-    Uses the person count of a zone (zone.home by default), so it works for
-    one person or a whole family.
+    Presence comes from Home Assistant's person entities ("home" / away), so
+    accuracy is whatever your person entities give you: add the Companion
+    app plus a router or Bluetooth tracker to each person for best results.
+    If you pick no people, the person count of a zone (zone.home) is used.
 
-    Safety notes:
-      * Auto-disarm is OFF by default. If it is on, a stolen phone or a GPS
-        glitch can disarm your house. Turn it on only if you accept that.
-      * Auto-disarm never touches a panel that is already "triggered" - an
-        alarm in progress must be cancelled on purpose (button or keypad).
+    Leaving - arms only when ALL picked people have been away continuously
+    for "Arm after", which rides out GPS / Wi-Fi flapping. It does not arm
+    (and tells you why, with an "Arm anyway" button) when:
+      * your guest-mode switch is on,
+      * there was motion inside after everyone left (someone is home
+        without a tracked phone: kids, guests, a cleaner). Your own walk out
+        is ignored for the exit grace time,
+      * a door or window you listed is open (or arms anyway and tells you
+        what is open, your choice).
+    After arming it checks the panel really started arming; some panels
+    (e.g. Alarmo with open sensors) refuse silently.
+
+    Arriving - choose "Do nothing" (default), "Ask me" (a push with a Disarm
+    button that needs your phone unlocked) or "Disarm automatically".
+    Automatic disarm means a stolen phone or a GPS glitch can disarm your
+    house; "Ask me" avoids that. It only ever disarms from the modes you
+    pick (default Away and Vacation), and never touches an alarm that is
+    already going off (pending / triggered).
   domain: automation
   author: ChuckBuilds
   homeassistant:
@@ -23,43 +38,26 @@ blueprint:
         entity:
           filter:
             - domain: alarm_control_panel
+    people:
+      name: People
+      description: >-
+        The people whose phones decide. Arms when all of them are away,
+        reacts when any of them arrives. Leave empty to use the zone count
+        below instead (everyone with a person entity).
+      default: []
+      selector:
+        entity:
+          multiple: true
+          filter:
+            - domain: person
     presence_zone:
-      name: Zone
+      name: Zone (only if no people are picked)
       description: Arms when this zone's person count drops to 0.
       default: zone.home
       selector:
         entity:
           filter:
             - domain: zone
-    arm_action:
-      name: Arm as
-      default: alarm_control_panel.alarm_arm_away
-      selector:
-        select:
-          options:
-            - label: Away
-              value: alarm_control_panel.alarm_arm_away
-            - label: Vacation
-              value: alarm_control_panel.alarm_arm_vacation
-            - label: Night
-              value: alarm_control_panel.alarm_arm_night
-            - label: Home
-              value: alarm_control_panel.alarm_arm_home
-    arm_delay:
-      name: Arm after everyone has been gone for
-      default: 5
-      selector:
-        number:
-          min: 0
-          max: 120
-          unit_of_measurement: minutes
-          mode: box
-    auto_disarm:
-      name: Disarm when someone arrives
-      description: Read the safety note above first.
-      default: false
-      selector:
-        boolean:
     panel_code:
       name: Panel code
       description: Only if your panel needs a code to arm / disarm. Leave empty otherwise.
@@ -67,38 +65,236 @@ blueprint:
       selector:
         text:
           type: password
-    notify_service:
-      name: Notify action
-      description: Optional, e.g. notify.mobile_app_your_phone. Empty = no push.
-      default: ""
-      selector:
-        text:
 
-mode: queued
-max: 5
+    leaving_section:
+      name: When everyone leaves
+      input:
+        arm_action:
+          name: Arm as
+          default: alarm_control_panel.alarm_arm_away
+          selector:
+            select:
+              options:
+                - label: Away
+                  value: alarm_control_panel.alarm_arm_away
+                - label: Vacation
+                  value: alarm_control_panel.alarm_arm_vacation
+                - label: Night
+                  value: alarm_control_panel.alarm_arm_night
+                - label: Home
+                  value: alarm_control_panel.alarm_arm_home
+        arm_delay:
+          name: Arm after everyone has been gone for
+          description: >-
+            Sustained absence before arming. Higher = fewer false arms from a
+            phone briefly looking away; lower = armed sooner.
+          default: 5
+          selector:
+            number:
+              min: 0
+              max: 120
+              step: any
+              unit_of_measurement: minutes
+              mode: box
+        guest_mode:
+          name: Guest mode switch
+          description: Optional input_boolean. While it is on, the house is never auto-armed.
+          default: []
+          selector:
+            entity:
+              filter:
+                - domain: input_boolean
+        motion_sensors:
+          name: Motion sensors (someone still home?)
+          description: >-
+            Optional. Motion after everyone left, or a sensor still "on" when
+            it is time to arm, means someone is home without a tracked phone,
+            so it does not arm.
+          default: []
+          selector:
+            entity:
+              multiple: true
+              filter:
+                - domain: binary_sensor
+        motion_exit_grace:
+          name: Ignore motion for the first
+          description: >-
+            Motion in this window after the last person left is you walking
+            out, and is ignored. Keep it shorter than "Arm after", or motion
+            only blocks arming if a sensor is still on.
+          default: 2
+          selector:
+            number:
+              min: 0
+              max: 60
+              step: any
+              unit_of_measurement: minutes
+              mode: box
+        open_sensors:
+          name: Doors and windows to check
+          description: Optional. Checked just before arming.
+          default: []
+          selector:
+            entity:
+              multiple: true
+              filter:
+                - domain: binary_sensor
+        open_policy:
+          name: If one is open
+          default: block
+          selector:
+            select:
+              options:
+                - label: Don't arm, tell me what's open
+                  value: block
+                - label: Arm anyway, tell me what's open
+                  value: arm_anyway
+
+    arriving_section:
+      name: When someone arrives
+      input:
+        arrival_action:
+          name: On arrival
+          default: nothing
+          selector:
+            select:
+              options:
+                - label: Do nothing (disarm yourself)
+                  value: nothing
+                - label: Ask me - push with a Disarm button (phone must be unlocked)
+                  value: ask
+                - label: Disarm automatically (a stolen phone could disarm)
+                  value: disarm
+        auto_disarm:
+          name: Disarm automatically (older setting)
+          description: >-
+            Kept for automations made before "On arrival" existed. On means
+            "Disarm automatically" whatever "On arrival" says.
+          default: false
+          selector:
+            boolean:
+        arrive_delay:
+          name: Count as arrived after
+          description: >-
+            The person must be home this long first. Rides out a phone
+            briefly flipping to "home" at the zone edge.
+          default: 0
+          selector:
+            number:
+              min: 0
+              max: 600
+              unit_of_measurement: seconds
+              mode: box
+        disarm_from:
+          name: Only disarm from these modes
+          description: >-
+            Night and Home usually mean people are inside on purpose, so
+            they are off by default.
+          default: [armed_away, armed_vacation]
+          selector:
+            select:
+              multiple: true
+              options:
+                - label: Away
+                  value: armed_away
+                - label: Vacation
+                  value: armed_vacation
+                - label: Night
+                  value: armed_night
+                - label: Home
+                  value: armed_home
+                - label: Custom bypass
+                  value: armed_custom_bypass
+                - label: Arming (exit delay)
+                  value: arming
+
+    notify_section:
+      name: Notifications
+      input:
+        notify_devices:
+          name: Phones to notify
+          description: Companion app phones that get the armed / blocked / arrival pushes.
+          default: []
+          selector:
+            device:
+              multiple: true
+              filter:
+                - integration: mobile_app
+        notify_service:
+          name: Other notify action (optional)
+          description: e.g. a notify group like notify.family_phones.
+          default: ""
+          selector:
+            text:
+
+# restart: someone arriving cancels a pending "Arm anyway?" question, and a
+# new departure replaces an old arrival prompt.
+mode: restart
+max_exceeded: silent
+
+trigger_variables:
+  people: !input people
+  zone_entity: !input presence_zone
 
 triggers:
-  - trigger: numeric_state
-    entity_id: !input presence_zone
-    below: 1
+  # Everyone picked is away (or the zone is empty), continuously.
+  - trigger: template
+    value_template: >-
+      {% if people %}{{ people | select('is_state', 'home') | list | count == 0 }}
+      {% else %}{{ states(zone_entity) | int(1) == 0 }}{% endif %}
     for:
       minutes: !input arm_delay
     id: left
+  - trigger: state
+    entity_id: !input people
+    to: home
+    for:
+      seconds: !input arrive_delay
+    id: arrived
+  # Zone mode only (no people picked): the zone count going above 0.
   - trigger: numeric_state
     entity_id: !input presence_zone
     above: 0
-    id: arrived
+    for:
+      seconds: !input arrive_delay
+    id: arrived_zone
 
 variables:
   alarm_panel: !input alarm_panel
   arm_action: !input arm_action
-  auto_disarm: !input auto_disarm
   panel_code: !input panel_code
+  guest_mode: !input guest_mode
+  motion_sensors: !input motion_sensors
+  motion_exit_grace: !input motion_exit_grace
+  arm_delay: !input arm_delay
+  open_sensors: !input open_sensors
+  open_policy: !input open_policy
+  arrival_action_input: !input arrival_action
+  auto_disarm: !input auto_disarm
+  arrival_action: "{{ 'disarm' if auto_disarm else arrival_action_input }}"
+  disarm_from: !input disarm_from
+  notify_devices: !input notify_devices
   notify_service: !input notify_service
   code_data: "{{ {'code': panel_code} if panel_code else {} }}"
+  mode_name: "{{ arm_action.split('_arm_')[-1] }}"
+  # Phones first (notify.mobile_app_<phone>), then the optional extra action.
+  notify_targets: >-
+    {% set ns = namespace(targets=[]) %}
+    {% for device in notify_devices if device_attr(device, 'name') %}
+      {% set ns.targets = ns.targets + ['notify.mobile_app_' ~ (device_attr(device, 'name') | slugify)] %}
+    {% endfor %}
+    {% if notify_service %}{% set ns.targets = ns.targets + [notify_service] %}{% endif %}
+    {{ ns.targets }}
 
 actions:
+  - variables:
+      action_arm_anyway: "{{ 'PRESENCE_ARM_ANYWAY_' ~ context.id }}"
+      action_disarm: "{{ 'PRESENCE_DISARM_' ~ context.id }}"
+      who: >-
+        {{ trigger.to_state.name if trigger.id == 'arrived' else 'Someone' }}
+
   - choose:
+      # ================================================== everyone left ==
       - conditions:
           - condition: trigger
             id: left
@@ -106,41 +302,166 @@ actions:
             entity_id: !input alarm_panel
             state: disarmed
         sequence:
+          - variables:
+              guest_on: "{{ guest_mode is string and guest_mode != '' and is_state(guest_mode, 'on') }}"
+              # Someone home without a tracked phone: a motion sensor that
+              # is on now, or changed after everyone left (past the exit grace,
+              # which covers your own walk out). "Everyone left" was arm_delay
+              # minutes ago, because the trigger waits that long.
+              moving: >-
+                {% set since = now() - timedelta(minutes=arm_delay | float(0))
+                               + timedelta(minutes=motion_exit_grace | float(0)) %}
+                {% set ns = namespace(names=[]) %}
+                {% for m in motion_sensors %}
+                  {% set s = states[m] %}
+                  {% if s and (s.state == 'on' or s.last_changed > since) %}
+                    {% set ns.names = ns.names + [s.name] %}
+                  {% endif %}
+                {% endfor %}
+                {{ ns.names }}
+              open_now: >-
+                {{ expand(open_sensors) | selectattr('state', 'eq', 'on') | map(attribute='name') | list }}
+              blockers: >-
+                {% set b = [] %}
+                {% if guest_on %}{% set b = b + ['guest mode is on'] %}{% endif %}
+                {% if moving %}{% set b = b + ['motion after you left: ' ~ moving | join(', ')] %}{% endif %}
+                {% if open_now and open_policy == 'block' %}{% set b = b + ['open: ' ~ open_now | join(', ')] %}{% endif %}
+                {{ b }}
+
+          # ---- blocked: say why, offer "Arm anyway" -----------------------
+          - if: "{{ blockers | count > 0 }}"
+            then:
+              - action: logbook.log
+                data:
+                  name: Alarm
+                  message: "everyone left, NOT armed: {{ blockers | join('; ') }}"
+              - repeat:
+                  for_each: "{{ notify_targets }}"
+                  sequence:
+                    - action: "{{ repeat.item }}"
+                      continue_on_error: true
+                      data:
+                        title: Alarm NOT armed
+                        message: "Everyone left, but {{ blockers | join('; ') }}."
+                        data:
+                          tag: alarm_presence
+                          actions:
+                            - action: "{{ action_arm_anyway }}"
+                              title: Arm anyway
+              # Guest mode is a deliberate "don't arm"; no point waiting.
+              - if: "{{ guest_on }}"
+                then:
+                  - stop: Guest mode
+              - wait_for_trigger:
+                  - trigger: event
+                    event_type: mobile_app_notification_action
+                    event_data:
+                      action: "{{ action_arm_anyway }}"
+                timeout: "01:00:00"
+                continue_on_timeout: false
+              - condition: state
+                entity_id: !input alarm_panel
+                state: disarmed
+
+          # ---- arm -----------------------------------------------------------
           - action: "{{ arm_action }}"
             target:
               entity_id: "{{ alarm_panel }}"
             data: "{{ code_data }}"
+            continue_on_error: true
+          - wait_template: "{{ not is_state(alarm_panel, 'disarmed') }}"
+            timeout: "00:00:10"
+            continue_on_timeout: true
+          - variables:
+              armed_ok: "{{ not is_state(alarm_panel, 'disarmed') }}"
           - action: logbook.log
             data:
               name: Alarm
-              message: "armed by presence - everyone left"
-          - if: "{{ notify_service != '' }}"
-            then:
-              - action: "{{ notify_service }}"
-                data:
-                  title: Alarm armed
-                  message: "Everyone left, alarm armed ({{ arm_action.split('_')[-1] }})."
+              message: >-
+                {{ 'armed (' ~ mode_name ~ ') by presence - everyone left' if armed_ok
+                   else 'tried to arm (' ~ mode_name ~ ') but the panel stayed disarmed' }}
+                {{ ('; still open: ' ~ open_now | join(', ')) if open_now else '' }}
+          - repeat:
+              for_each: "{{ notify_targets }}"
+              sequence:
+                - action: "{{ repeat.item }}"
+                  continue_on_error: true
+                  data:
+                    title: "{{ 'Alarm armed (' ~ mode_name ~ ')' if armed_ok else 'Alarm did NOT arm' }}"
+                    message: >-
+                      {% if armed_ok %}Everyone left.{% else %}Everyone left, but the panel refused to
+                      arm (open sensor or wrong code?). Arm it from the app.{% endif %}
+                      {{ ('Still open: ' ~ open_now | join(', ') ~ '.') if open_now else '' }}
+                    data:
+                      tag: alarm_presence
 
+      # ================================================== someone arrived ==
       - conditions:
-          - condition: trigger
-            id: arrived
-          - "{{ auto_disarm }}"
-          # Not "triggered": an alarm in progress is never auto-cancelled.
-          - condition: state
-            entity_id: !input alarm_panel
-            state: [armed_away, armed_home, armed_night, armed_vacation, armed_custom_bypass, arming, pending]
+          - condition: or
+            conditions:
+              - condition: trigger
+                id: arrived
+              - condition: and
+                conditions:
+                  - condition: trigger
+                    id: arrived_zone
+                  - "{{ not people }}"
+          - "{{ arrival_action != 'nothing' }}"
+          # Only the modes you allow; never pending / triggered.
+          - "{{ states(alarm_panel) in disarm_from }}"
         sequence:
+          - if: "{{ arrival_action == 'ask' }}"
+            then:
+              - repeat:
+                  for_each: "{{ notify_targets }}"
+                  sequence:
+                    - action: "{{ repeat.item }}"
+                      continue_on_error: true
+                      data:
+                        title: "{{ who }} is home"
+                        message: "The alarm is {{ states(alarm_panel) | replace('_', ' ') }}. Disarm it?"
+                        data:
+                          tag: alarm_presence
+                          actions:
+                            - action: "{{ action_disarm }}"
+                              title: Disarm
+                              authenticationRequired: true
+              - wait_for_trigger:
+                  - trigger: event
+                    event_type: mobile_app_notification_action
+                    event_data:
+                      action: "{{ action_disarm }}"
+                timeout: "00:30:00"
+                continue_on_timeout: false
+              # Still worth disarming? (someone may have used the keypad)
+              - condition: template
+                value_template: "{{ states(alarm_panel) in disarm_from }}"
+
           - action: alarm_control_panel.alarm_disarm
             target:
               entity_id: "{{ alarm_panel }}"
             data: "{{ code_data }}"
+            continue_on_error: true
+          - wait_template: "{{ is_state(alarm_panel, 'disarmed') }}"
+            timeout: "00:00:10"
+            continue_on_timeout: true
+          - variables:
+              disarmed_ok: "{{ is_state(alarm_panel, 'disarmed') }}"
           - action: logbook.log
             data:
               name: Alarm
-              message: "disarmed by presence - someone arrived"
-          - if: "{{ notify_service != '' }}"
-            then:
-              - action: "{{ notify_service }}"
-                data:
-                  title: Alarm disarmed
-                  message: "Someone arrived home, alarm disarmed."
+              message: >-
+                {{ ('disarmed - ' ~ who ~ ' arrived') if disarmed_ok
+                   else ('tried to disarm for ' ~ who ~ ' but the panel is still ' ~ states(alarm_panel)) }}
+          - repeat:
+              for_each: "{{ notify_targets }}"
+              sequence:
+                - action: "{{ repeat.item }}"
+                  continue_on_error: true
+                  data:
+                    title: "{{ 'Alarm disarmed' if disarmed_ok else 'Alarm did NOT disarm' }}"
+                    message: >-
+                      {{ (who ~ ' arrived home.') if disarmed_ok
+                         else ('The panel is still ' ~ states(alarm_panel) ~ '. Check the panel code.') }}
+                    data:
+                      tag: alarm_presence
