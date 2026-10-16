@@ -24,7 +24,8 @@ Built for August locks with DoorSense, but works with any lock plus a
 | Guest mode on | Longer countdown |
 | Party mode on | Never auto-locks; turning it off starts the countdown |
 | Door sensor unavailable | Nothing locks (fail-safe, not fail-shut) |
-| Lock command missed or jammed | Retried and verified against the lock state |
+| Lock command missed or jammed | Retried and verified against the lock state (an error from the lock no longer stops the retries) |
+| Every attempt failed, door still closed | Persistent notification, logbook line and an optional push: "Front Door did NOT lock", with the lock's state (e.g. `jammed`) |
 | Home Assistant restarts mid-countdown | Countdown resumes on start |
 
 ## Inputs
@@ -38,6 +39,8 @@ Built for August locks with DoorSense, but works with any lock plus a
 | Guest mode toggle | - | An `input_boolean` |
 | Party mode toggle | - | An `input_boolean` |
 | Lock attempts | 3 | Retries if the lock does not confirm |
+| Phones to tell (if locking fails) | - | Optional push when every attempt failed |
+| Other notify action (if locking fails) | - | Optional; typing your phone's `notify.mobile_app_...` here too survives the app registering again (no double push) |
 
 ## Install
 
