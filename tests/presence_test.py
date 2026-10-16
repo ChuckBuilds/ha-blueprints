@@ -21,6 +21,8 @@ shutil.copytree(REPO / "blueprints" / "automation", Path(CFG) / "blueprints" / "
 
 P = "alarm_control_panel.house"          # people mode
 P_ZONE = "alarm_control_panel.legacy"    # zone-count mode, old auto_disarm input
+P_PHONE = "alarm_control_panel.phones"   # picked phones (device_tracker) instead of people
+PH = "device_tracker.charles_iphone"
 A, B = "person.a", "person.b"
 calls = []
 PANEL = {"refuse_arm": False, "code": "1234"}
@@ -64,7 +66,8 @@ async def main():
     phone = device_registry.async_get(hass).async_get_or_create(
         config_entry_id=entry.entry_id, identifiers={("mobile_app", "me")}, name="me")
 
-    for e in (P, P_ZONE):
+    hass.states.async_set(PH, "home", {"friendly_name": "Charles iPhone"})
+    for e in (P, P_ZONE, P_PHONE):
         hass.states.async_set(e, "disarmed")
     hass.states.async_set(A, "home", {"friendly_name": "Alice"})
     hass.states.async_set(B, "home", {"friendly_name": "Bob"})
@@ -83,6 +86,9 @@ async def main():
             motion_sensors=["binary_sensor.motion"], motion_exit_grace=0,
             open_sensors=["binary_sensor.window"], open_policy="block",
             arrival_action="ask", arrive_delay=2, notify_devices=[phone.id])},
+        {"id": "phones", "alias": "phones", **bp(
+            alarm_panel=P_PHONE, people=[PH], arm_action="alarm_control_panel.alarm_arm_vacation",
+            arm_delay=0.05, arrival_action="disarm", panel_code="1234", notify_devices=[phone.id])},
         {"id": "legacy", "alias": "legacy", **bp(
             alarm_panel=P_ZONE, presence_zone="zone.home", arm_delay=0, auto_disarm=True,
             notify_service="notify.mobile_app_me")},
@@ -223,6 +229,18 @@ async def main():
     hass.states.async_set("zone.home", "1"); await asyncio.sleep(1)
     check("old auto_disarm still disarms automatically", hass.states.get(P_ZONE).state == "disarmed",
           hass.states.get(P_ZONE))
+
+    # 10b. Picked phone (device_tracker) + Arm as Vacation + automatic disarm
+    await reset()
+    hass.states.async_set(P, "armed_night")  # keep the people automation out of it
+    hass.states.async_set(PH, "not_home", {"friendly_name": "Charles iPhone"}); await asyncio.sleep(5)
+    check("picked phone away -> armed as Vacation", hass.states.get(P_PHONE).state == "armed_vacation",
+          hass.states.get(P_PHONE))
+    hass.states.async_set(PH, "home", {"friendly_name": "Charles iPhone"}); await asyncio.sleep(1)
+    check("picked phone home -> disarmed automatically", hass.states.get(P_PHONE).state == "disarmed",
+          hass.states.get(P_PHONE))
+    check("disarm push names the phone", [d for d in pushes() if "Charles iPhone arrived" in d.get("message", "")],
+          pushes())
 
     # 11. Missing-phone check: reload clears, removing the phone warns, nothing else happens
     await reset()

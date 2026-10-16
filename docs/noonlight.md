@@ -246,7 +246,7 @@ each person the Companion app plus a router or Bluetooth tracker.
 | Input | Default | Notes |
 |---|---|---|
 | Alarm panel | - | |
-| People | - | Arms when all are away, reacts when any arrives. Empty = use the zone count |
+| People or phones | - | Person entities (combine all their trackers, most accurate) and / or Companion app phones (`device_tracker`, that phone alone decides). Arms when all are away, reacts when any arrives. Empty = use the zone count |
 | Zone | `zone.home` | Only used when no people are picked |
 | Panel code | - | Only if your panel needs one to arm / disarm |
 | Arm as | Away | |
@@ -262,10 +262,10 @@ each person the Companion app plus a router or Bluetooth tracker.
 | Only disarm from these modes | Away, Vacation | |
 | Phones to notify / Other notify action | - | |
 
-`tests/presence_test.py` runs it in a headless Home Assistant through 23
+`tests/presence_test.py` runs it in a headless Home Assistant through 26
 scenarios: flapping, guest mode, motion before and after leaving, open
 windows, a refusing panel, Ask-me arrival, Night mode, arrival blips, and
-the older zone + auto-disarm setup, and the missing-phone warning.
+picked phones arming as Vacation, the older zone + auto-disarm setup, and the missing-phone warning.
 
 ## Cancelling an alarm
 

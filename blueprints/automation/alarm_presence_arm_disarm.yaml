@@ -39,17 +39,20 @@ blueprint:
           filter:
             - domain: alarm_control_panel
     people:
-      name: People
+      name: People or phones
       description: >-
-        The people whose phones decide. Arms when all of them are away,
-        reacts when any of them arrives. Leave empty to use the zone count
-        below instead (everyone with a person entity).
+        Who decides. Pick people (a person combines all their trackers -
+        usually the most accurate) and / or phones (a Companion app
+        device_tracker: that phone alone decides). Arms when all of them are
+        away, reacts when any of them arrives. Leave empty to use the zone
+        count below instead (everyone with a person entity).
       default: []
       selector:
         entity:
           multiple: true
           filter:
             - domain: person
+            - domain: device_tracker
     presence_zone:
       name: Zone (only if no people are picked)
       description: Arms when this zone's person count drops to 0.
