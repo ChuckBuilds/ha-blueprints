@@ -239,7 +239,7 @@ variables:
     {% for device in notify_devices if device_attr(device, 'name') %}
       {% set ns.targets = ns.targets + ['notify.mobile_app_' ~ (device_attr(device, 'name') | slugify)] %}
     {% endfor %}
-    {{ ns.targets + ((notify_extra if notify_extra is list else [notify_extra]) | reject('eq', '') | list) }}
+    {{ (ns.targets + ((notify_extra if notify_extra is list else [notify_extra]) | reject('eq', '') | list)) | unique | list }}
   grace_period: !input grace_period
   snooze_duration: !input snooze_duration
   snooze_timer_prefix: !input snooze_timer_prefix

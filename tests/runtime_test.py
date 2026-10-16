@@ -128,7 +128,8 @@ async def main():
                 notify_service="notify.mobile_app_me", panel_code="1234", show_disarm_button=False,
                 countdown=10)},
         {"id": "fire", "alias": "fire", **bp("noonlight_dispatch.yaml", trigger_entities=["binary_sensor.smoke"], service="fire",
-                           mode_helper=MODE, notify_service="notify.mobile_app_me", countdown=10)},
+                           mode_helper=MODE, notify_devices=[phone.id], notify_service="notify.mobile_app_me",
+                           countdown=10)},
         {"id": "tracker", "alias": "tracker", **bp("noonlight_status_tracker.yaml", notify_devices=[phone.id],
                               household_notify_service="notify.family",
                               alarm_id_helper="input_text.noonlight_last_alarm_id",
@@ -302,7 +303,9 @@ async def main():
     # 8. Fire, Test mode, no token -> integration fails closed -> FAILED critical push
     await reset("Test")
     hass.states.async_set("binary_sensor.smoke", "on"); await settle(11.5)
-    check("Fire countdown push (notify_service only)", any(t.startswith("Fire alarm: ") for t in pushes()), pushes())
+    check("Fire countdown push", any(t.startswith("Fire alarm: ") for t in pushes()), pushes())
+    check("phone picked + same action typed -> one push, not two",
+          sum(t.startswith("Fire alarm: ") for t in pushes()) == 1, pushes())
     check("no Disarm button without a panel", not [a for a in countdown_actions() if a.startswith("NOONLIGHT_DISARM_")],
           countdown_actions())
     check("missing token -> FAILED push", last_push("Noonlight alarm FAILED"), pushes())

@@ -303,7 +303,7 @@ variables:
       {% set ns.targets = ns.targets + ['notify.mobile_app_' ~ (device_attr(device, 'name') | slugify)] %}
     {% endfor %}
     {% if notify_service %}{% set ns.targets = ns.targets + [notify_service] %}{% endif %}
-    {{ ns.targets }}
+    {{ ns.targets | unique | list }}
   # iOS critical alert + Android alarm channel: rings through silent mode.
   critical_data:
     push:

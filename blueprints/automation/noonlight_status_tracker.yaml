@@ -167,14 +167,14 @@ variables:
       {% set ns.targets = ns.targets + ['notify.mobile_app_' ~ (device_attr(device, 'name') | slugify)] %}
     {% endfor %}
     {% if notify_service %}{% set ns.targets = ns.targets + [notify_service] %}{% endif %}
-    {{ ns.targets }}
+    {{ ns.targets | unique | list }}
   household_targets: >-
     {% set ns = namespace(targets=[]) %}
     {% for device in household_devices if device_attr(device, 'name') %}
       {% set ns.targets = ns.targets + ['notify.mobile_app_' ~ (device_attr(device, 'name') | slugify)] %}
     {% endfor %}
     {% if household_notify_service %}{% set ns.targets = ns.targets + [household_notify_service] %}{% endif %}
-    {{ ns.targets }}
+    {{ ns.targets | unique | list }}
   alarm_id_helper: !input alarm_id_helper
   cancel_service_available: !input cancel_service_available
   result_timeout: !input result_timeout

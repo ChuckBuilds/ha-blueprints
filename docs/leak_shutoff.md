@@ -44,6 +44,8 @@ Notifications run beside the countdown and the shutoff, never in front of
 them. A missing notify action raises an error that `continue_on_error` cannot
 catch, so it can only fail its own branch, not the valve.
 
+**Tip: pick the phone *and* type its notify action.** Re-adding the server in the Companion app, logging in again or reinstalling it registers the phone as a new device, and a phone picked by device then gets no pushes. Its notify action name (`notify.mobile_app_<phone name>`) stays the same, so also type it under "Other notify action". Duplicates are removed, so you still get one push.
+
 **Missing phone warning.** If a phone you picked is removed, or the Companion app registers again as a new device, the automation raises a persistent notification naming itself (checked at start, on reload and when a device is removed). Re-pick the phone to clear it.
 
 ## Inputs

@@ -301,7 +301,7 @@ variables:
       {% set ns.targets = ns.targets + ['notify.mobile_app_' ~ (device_attr(device, 'name') | slugify)] %}
     {% endfor %}
     {% if notify_service %}{% set ns.targets = ns.targets + [notify_service] %}{% endif %}
-    {{ ns.targets }}
+    {{ ns.targets | unique | list }}
 
 actions:
   # ---- Phone check (its own triggers only; alarm runs skip this) -------
