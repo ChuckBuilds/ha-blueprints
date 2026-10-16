@@ -26,6 +26,7 @@ shutil.copytree(REPO / "blueprints" / "automation", Path(CFG) / "blueprints" / "
 calls = []          # (service, data)
 P = "alarm_control_panel.home_alarm"
 MODE = "input_select.noonlight_mode"
+PC = "alarm_control_panel.check_panel"   # arming-check tests only
 P_NOUNLOCK = "alarm_control_panel.no_unlock_panel"
 P_NOBUTTON = "alarm_control_panel.no_button_panel"
 PANEL_CODE = {"code": None}  # set to require a disarm code in the panel mock
@@ -88,6 +89,9 @@ async def main():
     hass.states.async_set(MODE, "Off")
     hass.states.async_set("input_text.noonlight_last_trigger", "")
     hass.states.async_set("input_text.noonlight_last_alarm_id", "")
+    hass.states.async_set(PC, "disarmed")
+    hass.states.async_set("binary_sensor.check_door", "off", {"friendly_name": "Test Door", "device_class": "door"})
+    hass.states.async_set("binary_sensor.check_window", "off", {"friendly_name": "Test Window", "device_class": "window"})
     for s in ["binary_sensor.front_door", "binary_sensor.smoke", "binary_sensor.motion"]:
         hass.states.async_set(s, "off")
     hass.states.async_set("zone.home", "1")
@@ -101,6 +105,9 @@ async def main():
         config_entry_id=phone_entry.entry_id, identifiers={("mobile_app", "me")}, name="me")
 
     assert await async_setup_component(hass, "automation", {"automation": [
+        {"id": "tripcheck", "alias": "tripcheck", **bp("alarm_sensor_trigger.yaml", alarm_panel=PC,
+                sensors=["binary_sensor.check_door", "binary_sensor.check_window"], debounce=0,
+                check_notify_devices=[phone.id])},
         {"id": "trip", "alias": "trip", **bp("alarm_sensor_trigger.yaml", alarm_panel=P,
                            sensors=["binary_sensor.front_door", "binary_sensor.motion"], debounce=0,
                            last_trigger_helper="input_text.noonlight_last_trigger")},
@@ -346,6 +353,44 @@ async def main():
           hass.states.get("input_text.noonlight_last_trigger"))
     hass.states.async_set("binary_sensor.motion", "off", {"device_class": "motion"})
     await settle(11)
+
+    # 12c. Arming check: open / offline sensors reported when the panel arms
+    def armcheck_pushes():
+        return [d for n, d in calls if n == "notify.mobile_app_me" and "with problems" in d.get("title", "")]
+
+    async def arm_pc(state):
+        hass.states.async_set(PC, "disarmed"); await settle(0.3)
+        calls.clear()
+        hass.states.async_set(PC, state); await settle(1)
+
+    hass.states.async_set("binary_sensor.check_door", "on", {"friendly_name": "Test Door", "device_class": "door"})
+    await arm_pc("armed_away")
+    ap = armcheck_pushes()
+    check("armed with a door open -> push names it", ap and "Test Door is open" in ap[0]["message"]
+          and ap[0]["title"] == "Alarm armed (away) with problems", ap)
+    made = {d["notification_id"]: d for d in took("persistent_notification.create")}
+    check("armed with a door open -> persistent notification", "arm_check_automation.tripcheck" in made, list(made))
+    check("arming check does not trip the panel", hass.states.get(PC).state == "armed_away"
+          and not [d for d in took("alarm_control_panel.alarm_trigger") if d["entity_id"] == [PC]], calls)
+
+    hass.states.async_set("binary_sensor.check_door", "off", {"friendly_name": "Test Door", "device_class": "door"})
+    hass.states.async_set("binary_sensor.check_window", "unavailable", {"friendly_name": "Test Window", "device_class": "window"})
+    await arm_pc("armed_night")
+    ap = armcheck_pushes()
+    check("armed with a sensor offline -> 'is offline'", ap and "Test Window is offline" in ap[0]["message"], ap)
+
+    hass.states.async_set("binary_sensor.check_window", "off", {"friendly_name": "Test Window", "device_class": "window"})
+    await arm_pc("armed_away")
+    check("all closed -> no push, notification cleared", not armcheck_pushes()
+          and "arm_check_automation.tripcheck" in [d["notification_id"] for d in took("persistent_notification.dismiss")], calls)
+
+    hass.states.async_set("binary_sensor.check_door", "on", {"friendly_name": "Test Door", "device_class": "door"})
+    await arm_pc("armed_home")
+    check("armed home (not this automation's mode) -> no check", not armcheck_pushes(), calls)
+    await arm_pc("arming")
+    check("exit delay (arming) -> no check", not armcheck_pushes(), calls)
+    hass.states.async_set("binary_sensor.check_door", "off", {"friendly_name": "Test Door", "device_class": "door"})
+    hass.states.async_set(PC, "disarmed")
 
     # 12d. Missing-phone check: reload with the phone present clears; removing it warns
     await reset("Live")

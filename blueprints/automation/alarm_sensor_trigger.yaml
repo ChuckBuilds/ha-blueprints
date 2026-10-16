@@ -14,6 +14,11 @@ blueprint:
 
     Optionally records which sensor tripped, so the Noonlight dispatch can
     tell the operator "Back door" instead of just "Alarm panel".
+
+    Arming check: when the panel arms into one of your armed states, any of
+    these sensors that is open or offline is reported (push + persistent
+    notification). An open or offline sensor cannot trip the alarm until it
+    reports closed, so arming that way silently leaves a hole.
   domain: automation
   author: ChuckBuilds
   homeassistant:
@@ -76,6 +81,28 @@ blueprint:
           filter:
             - domain: input_text
 
+    arm_check_section:
+      name: Arming check (optional pushes)
+      collapsed: true
+      input:
+        check_notify_devices:
+          name: Phones to tell
+          description: >-
+            Get a push when the panel arms while one of these sensors is open
+            or offline. A persistent notification is shown either way.
+          default: []
+          selector:
+            device:
+              multiple: true
+              filter:
+                - integration: mobile_app
+        check_notify_service:
+          name: Other notify action
+          description: Optional, e.g. a notify group like notify.family_phones.
+          default: ""
+          selector:
+            text:
+
 mode: single
 max_exceeded: silent
 
@@ -86,6 +113,11 @@ triggers:
     to: "on"
     for:
       seconds: !input debounce
+  # Arming check: the panel has finished arming into one of your states.
+  - trigger: state
+    entity_id: !input alarm_panel
+    to: !input armed_states
+    id: arm_check
 
 conditions:
   - condition: state
@@ -112,6 +144,63 @@ variables:
     {%- else -%}{{ name }} triggered{%- endif %} ({{ mode }})
 
 actions:
+  # ---- Arming check (own trigger; the trip path below is unchanged) --------
+  - if: "{{ trigger.id == 'arm_check' }}"
+    then:
+      - variables:
+          sensors: !input sensors
+          check_notify_devices: !input check_notify_devices
+          check_notify_service: !input check_notify_service
+          problems: >-
+            {% set ns = namespace(p=[]) %}
+            {% for e in sensors %}
+              {% set st = states(e) %}
+              {% if st == 'on' %}{% set ns.p = ns.p + [state_attr(e, 'friendly_name') ~ ' is open'] %}
+              {% elif st in ['unavailable', 'unknown'] %}{% set ns.p = ns.p + [state_attr(e, 'friendly_name') ~ ' is offline'] %}
+              {% endif %}
+            {% endfor %}
+            {{ ns.p }}
+          targets: >-
+            {% set ns = namespace(t=[]) %}
+            {% for d in check_notify_devices if device_attr(d, 'name') %}
+              {% set ns.t = ns.t + ['notify.mobile_app_' ~ (device_attr(d, 'name') | slugify)] %}
+            {% endfor %}
+            {% if check_notify_service %}{% set ns.t = ns.t + [check_notify_service] %}{% endif %}
+            {{ ns.t }}
+          armed_as: "{{ trigger.to_state.state | replace('armed_', '') | replace('_', ' ') }}"
+      - if: "{{ problems | count > 0 }}"
+        then:
+          - action: logbook.log
+            data:
+              name: Alarm
+              message: "armed ({{ armed_as }}) with problems: {{ problems | join('; ') }}"
+          - action: persistent_notification.create
+            data:
+              notification_id: "{{ 'arm_check_' ~ this.entity_id }}"
+              title: "Alarm armed ({{ armed_as }}) with problems"
+              message: >-
+                {{ problems | join('; ') }}. These cannot trip the alarm until they
+                report closed. Close / fix them, or disarm and re-arm.
+          - repeat:
+              for_each: "{{ targets }}"
+              sequence:
+                - action: "{{ repeat.item }}"
+                  continue_on_error: true
+                  data:
+                    title: "Alarm armed ({{ armed_as }}) with problems"
+                    message: >-
+                      {{ problems | join('; ') }}. Can't trip the alarm until it reports
+                      closed.
+                    data:
+                      tag: "{{ 'arm_check_' ~ this.entity_id }}"
+                      push:
+                        interruption-level: time-sensitive
+        else:
+          - action: persistent_notification.dismiss
+            data:
+              notification_id: "{{ 'arm_check_' ~ this.entity_id }}"
+      - stop: Arming check only
+
   - if: "{{ last_trigger_helper is string and last_trigger_helper != '' }}"
     then:
       - action: input_text.set_value

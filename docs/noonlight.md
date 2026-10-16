@@ -212,6 +212,8 @@ The helper gets what happened, worded by the sensor's type, plus the mode the pa
 
 The name is the sensor's friendly name, so name your sensors the way you want them read out (e.g. "Front Door", not "Front Door Door").
 
+**Arming check.** When the panel finishes arming into one of this automation's armed states, any of its sensors that is open or offline is reported: a persistent notification always, and a push to the phones under "Arming check" if you pick any. An open or offline sensor cannot trip the alarm until it reports closed, so this closes the "armed with the back door open" hole. The exit delay (`arming`) is ignored, since a door open then is you leaving.
+
 Only `off -> on` counts. Sensors coming back from `unavailable` after a
 reboot or radio drop never trip the panel.
 
@@ -330,7 +332,7 @@ cancel. Put your real instructions back. Leave mode on Live.
 
 `tests/runtime_test.py` runs all four blueprints inside a headless Home
 Assistant with recorded (fake) notify, Noonlight and panel actions and plays
-through 61 scenarios. Needs `pip install homeassistant`; takes about 2.5
+through 68 scenarios. Needs `pip install homeassistant`; takes about 2.5
 minutes and exits non-zero on any failure.
 
 ## Disclaimer
