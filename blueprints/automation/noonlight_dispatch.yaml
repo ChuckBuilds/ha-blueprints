@@ -243,6 +243,23 @@ triggers:
     # Coming back from unavailable/unknown (reboot, Zigbee drop) is not an alarm.
     not_from: ["unavailable", "unknown"]
 
+  # Phone check (a few ms, separate from alarm runs). With mode: single an alarm
+  # can't start during it, but it only runs at HA start, on an automation reload
+  # (which restarts in-flight runs anyway) or when a device is removed.
+  # Phone check: re-check the picked phones when HA starts, when
+  # automations reload (e.g. this one is saved) and when a device is removed.
+  - trigger: homeassistant
+    event: start
+    id: phone_check
+  - trigger: event
+    event_type: automation_reloaded
+    id: phone_check
+  - trigger: event
+    event_type: device_registry_updated
+    event_data:
+      action: remove
+    id: phone_check
+
 variables:
   service: !input service
   mode_helper: !input mode_helper
@@ -269,7 +286,8 @@ variables:
   # recorded one. Otherwise use the trigger entity's own name.
   cause_source: >-
     {% set helper = last_trigger_helper if last_trigger_helper is string else '' %}
-    {% if trigger.entity_id.startswith('alarm_control_panel.')
+    {% if trigger.id == 'phone_check' %}
+    {% elif trigger.entity_id.startswith('alarm_control_panel.')
           and helper and states(helper) not in ['', 'unknown', 'unavailable'] %}
       {{ states(helper) }}
     {% else %}
@@ -307,6 +325,37 @@ variables:
     {{ media }}
 
 actions:
+  # ---- Phone check (its own triggers only; alarm runs skip this) -------
+  # A phone that was removed or re-registered (new device) gets no pushes,
+  # silently. Say so in a persistent notification until it is re-picked.
+  - if: "{{ trigger.id == 'phone_check' }}"
+    then:
+      - variables:
+          missing_phones: >-
+            {% set ns = namespace(n=0) %}
+            {% for d in notify_devices if not device_attr(d, 'name') %}{% set ns.n = ns.n + 1 %}{% endfor %}
+            {{ ns.n }}
+      - if: "{{ missing_phones | int > 0 }}"
+        then:
+          - action: persistent_notification.create
+            data:
+              notification_id: "{{ 'missing_phone_' ~ this.entity_id }}"
+              title: Phone missing from an alarm automation
+              message: >-
+                {{ missing_phones }} phone(s) picked in "{{ this.attributes.friendly_name }}"
+                no longer exist (removed, or the Companion app registered again as a
+                new device), so they get no pushes. Open the automation and pick the
+                phone again.
+          - action: logbook.log
+            data:
+              name: "{{ this.attributes.friendly_name }}"
+              message: "{{ missing_phones }} picked phone(s) no longer exist - re-pick them"
+        else:
+          - action: persistent_notification.dismiss
+            data:
+              notification_id: "{{ 'missing_phone_' ~ this.entity_id }}"
+      - stop: Phone check only
+
   # Unique per run so buttons from an old notification can't act on this one.
   # (context is only available inside actions, not in the top-level variables.)
   - variables:

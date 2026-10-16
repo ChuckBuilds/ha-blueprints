@@ -44,6 +44,8 @@ Notifications run beside the countdown and the shutoff, never in front of
 them. A missing notify action raises an error that `continue_on_error` cannot
 catch, so it can only fail its own branch, not the valve.
 
+**Missing phone warning.** If a phone you picked is removed, or the Companion app registers again as a new device, the automation raises a persistent notification naming itself (checked at start, on reload and when a device is removed). Re-pick the phone to clear it.
+
 ## Inputs
 
 | Input | Default | Notes |
