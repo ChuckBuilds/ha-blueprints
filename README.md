@@ -11,7 +11,7 @@ Home Assistant, then read its guide for setup and testing.
 | Noonlight dispatch | Cancellable countdown, then police / fire / medical via Noonlight (Off / Local / Test / Live) | [![Import](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2FChuckBuilds%2Fha-blueprints%2Fblob%2Fmain%2Fblueprints%2Fautomation%2Fnoonlight_dispatch.yaml) | [Guide](docs/noonlight.md#noonlight-dispatch-countdown-cancel-offlocaltestlive) |
 | Noonlight status tracker | Active / failed / cancelled pushes, after-dispatch cancel button, Noonlight webhooks | [![Import](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2FChuckBuilds%2Fha-blueprints%2Fblob%2Fmain%2Fblueprints%2Fautomation%2Fnoonlight_status_tracker.yaml) | [Guide](docs/noonlight.md#noonlight-status-tracker) |
 | Alarm sensor trigger | Doors, windows and motion trip your alarm panel while armed | [![Import](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2FChuckBuilds%2Fha-blueprints%2Fblob%2Fmain%2Fblueprints%2Fautomation%2Falarm_sensor_trigger.yaml) | [Guide](docs/noonlight.md#alarm-sensor-trigger) |
-| Alarm presence arm / disarm | Arms when everyone leaves; optional disarm on arrival | [![Import](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2FChuckBuilds%2Fha-blueprints%2Fblob%2Fmain%2Fblueprints%2Fautomation%2Falarm_presence_arm_disarm.yaml) | [Guide](docs/noonlight.md#alarm-presence-arm--disarm) |
+| Alarm presence arm / disarm | Arms when the people you pick leave (flapping, guest, motion and open-door checks); asks or disarms on arrival | [![Import](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2FChuckBuilds%2Fha-blueprints%2Fblob%2Fmain%2Fblueprints%2Fautomation%2Falarm_presence_arm_disarm.yaml) | [Guide](docs/noonlight.md#alarm-presence-arm--disarm) |
 
 The four alarm blueprints work together as one system: start with the
 [Noonlight alarm suite guide](docs/noonlight.md).
@@ -33,4 +33,4 @@ Import blueprint, and paste the blueprint's GitHub URL from its guide.
 | `blueprints/automation/` | The blueprint files (these paths are what Home Assistant re-imports from, so they don't move) |
 | `docs/` | One guide per blueprint |
 | `examples/` | Helpers and example automations in YAML |
-| `tests/` | `runtime_test.py` (alarm blueprints) and `leak_test.py` (leak shutoff), run in a headless Home Assistant |
+| `tests/` | `runtime_test.py` (alarm blueprints), `presence_test.py` (presence arm / disarm) and `leak_test.py` (leak shutoff), run in a headless Home Assistant |
