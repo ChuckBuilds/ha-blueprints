@@ -166,7 +166,7 @@ actions:
               {% set ns.t = ns.t + ['notify.mobile_app_' ~ (device_attr(d, 'name') | slugify)] %}
             {% endfor %}
             {% if check_notify_service %}{% set ns.t = ns.t + [check_notify_service] %}{% endif %}
-            {{ ns.t }}
+            {{ ns.t | unique | list }}
           armed_as: "{{ trigger.to_state.state | replace('armed_', '') | replace('_', ' ') }}"
       - if: "{{ problems | count > 0 }}"
         then:
