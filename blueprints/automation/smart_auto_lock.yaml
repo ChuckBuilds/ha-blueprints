@@ -84,6 +84,30 @@ blueprint:
           max: 5
           step: 1
           mode: slider
+    failure_section:
+      name: If locking fails (optional)
+      collapsed: true
+      input:
+        notify_devices:
+          name: Phones to tell
+          description: >-
+            Get a push when every lock attempt failed and the door is still
+            unlocked. A persistent notification is shown either way.
+          default: []
+          selector:
+            device:
+              multiple: true
+              filter:
+                - integration: mobile_app
+        notify_service:
+          name: Other notify action
+          description: >-
+            Optional, e.g. notify.mobile_app_your_phone or a notify group.
+            Typing your phone's action here as well survives the Companion app
+            registering the phone again; duplicates are removed.
+          default: ""
+          selector:
+            text:
 
 # Only one countdown per door may be in flight. Any new trigger cancels the
 # pending run and starts a fresh one - that is what makes the timer resettable.
@@ -97,6 +121,16 @@ variables:
   party_mode: !input party_mode
   normal_delay: !input normal_delay
   guest_delay: !input guest_delay
+  lock_attempts: !input lock_attempts
+  notify_devices: !input notify_devices
+  notify_service: !input notify_service
+  notify_targets: >-
+    {% set ns = namespace(t=[]) %}
+    {% for d in notify_devices if device_attr(d, 'name') %}
+      {% set ns.t = ns.t + ['notify.mobile_app_' ~ (device_attr(d, 'name') | slugify)] %}
+    {% endfor %}
+    {% if notify_service %}{% set ns.t = ns.t + [notify_service] %}{% endif %}
+    {{ ns.t | unique | list }}
 
 triggers:
   # The lock was opened (app, keypad, key, or by hand).
@@ -176,6 +210,9 @@ actions:
         - action: lock.lock
           target:
             entity_id: !input lock_entity
+          # A jammed or unreachable lock can raise an error; keep retrying
+          # (and alert below) instead of aborting on the first attempt.
+          continue_on_error: true
         - wait_template: "{{ is_state(lock_entity, 'locked') }}"
           timeout: "00:00:30"
           continue_on_timeout: true
@@ -184,4 +221,38 @@ actions:
               value_template: >-
                 {{ is_state(lock_entity, 'locked') or is_state(door_sensor, 'on') }}
           then:
+            - if: "{{ is_state(lock_entity, 'locked') }}"
+              then:
+                - action: persistent_notification.dismiss
+                  data:
+                    notification_id: "{{ 'auto_lock_failed_' ~ this.entity_id }}"
             - stop: Locked, or the door opened again.
+
+  # Every attempt failed and the door is still closed: the house is unlocked
+  # and nothing else will lock it. Say so, loudly.
+  - action: logbook.log
+    data:
+      name: "{{ state_attr(lock_entity, 'friendly_name') }}"
+      message: "auto-lock FAILED after {{ lock_attempts | int }} attempts (lock is {{ states(lock_entity) }})"
+  - action: persistent_notification.create
+    data:
+      notification_id: "{{ 'auto_lock_failed_' ~ this.entity_id }}"
+      title: "{{ state_attr(lock_entity, 'friendly_name') }} did NOT lock"
+      message: >-
+        Auto-lock tried {{ lock_attempts | int }} times; the lock is
+        {{ states(lock_entity) }} and the door is closed. Lock it from the app
+        or check it for a jam / low battery.
+  - repeat:
+      for_each: "{{ notify_targets }}"
+      sequence:
+        - action: "{{ repeat.item }}"
+          continue_on_error: true
+          data:
+            title: "{{ state_attr(lock_entity, 'friendly_name') }} did NOT lock"
+            message: >-
+              Auto-lock tried {{ lock_attempts | int }} times; the lock is
+              {{ states(lock_entity) }}. Lock it from the app.
+            data:
+              tag: "{{ 'auto_lock_failed_' ~ this.entity_id }}"
+              push:
+                interruption-level: time-sensitive
