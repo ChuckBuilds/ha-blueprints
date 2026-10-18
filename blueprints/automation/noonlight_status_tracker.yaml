@@ -8,13 +8,19 @@ blueprint:
       * requested - from the dispatch blueprint; if no result follows in
                     time you get a "no response - call 911" push.
       * attempted - logbook only.
-      * created   - push with the alarm ID and a "Cancel Noonlight alarm"
-                    button. Saves the ID to a helper.
+      * created   - push with the alarm ID and a button: "Disarm" (cancels
+                    Noonlight AND disarms the panel) for police alarms when
+                    a panel is set, else "Cancel Noonlight alarm". Saves the
+                    ID to a helper.
       * failed    - critical push: Noonlight was NOT reached, call 911 yourself.
       * canceled  - push confirming the cancel.
       * webhook   - Noonlight's own updates, in plain English: "Operator
                     contacted 911", "Alarm closed by dispatcher", "Cancelled by
                     phone +1555...".
+
+    One disarm stops everything: with an alarm panel set, disarming it (keypad,
+    app, dashboard) also cancels an active police alarm. Fire and medical
+    alarms are never cancelled by a disarm.
 
     Everything is written to the logbook (filter on "Noonlight") so you can
     read the full alarm timeline afterwards.
@@ -81,6 +87,44 @@ blueprint:
       default: false
       selector:
         boolean:
+    disarm_section:
+      name: One disarm stops everything (optional)
+      input:
+        alarm_panel:
+          name: Alarm panel
+          description: >-
+            Disarming this panel also cancels an active POLICE Noonlight
+            alarm, and the ACTIVE push gets a Disarm button that does both.
+            Fire and medical alarms are never cancelled by a disarm. Leave
+            empty to keep the two separate.
+          default: []
+          selector:
+            entity:
+              filter:
+                - domain: alarm_control_panel
+        panel_code:
+          name: Panel code (for the Disarm button)
+          description: >-
+            Code the Disarm button uses. Leave empty if the panel needs no
+            code; a panel that needs one gets a plain "Cancel Noonlight alarm"
+            button instead.
+          default: ""
+          selector:
+            text:
+              type: password
+        disarm_watch_minutes:
+          name: Watch for a disarm for
+          description: >-
+            How long after an alarm goes out a disarm still cancels it. Not
+            kept across a Home Assistant restart; the button and Noonlight's
+            call still work.
+          default: 60
+          selector:
+            number:
+              min: 5
+              max: 240
+              unit_of_measurement: minutes
+              mode: box
     result_timeout:
       name: Result timeout
       description: >-
@@ -132,6 +176,11 @@ triggers:
   - trigger: event
     event_type: mobile_app_notification_action
     id: cancel_button
+  # Fired by the disarm watch below; your own automations can fire it too
+  # (event_data: alarm_id).
+  - trigger: event
+    event_type: noonlight_cancel_requested
+    id: cancel_button
 
   # Phone check: re-check the picked phones when HA starts, when
   # automations reload (e.g. this one is saved) and when a device is removed.
@@ -152,6 +201,7 @@ conditions:
   - condition: template
     value_template: >-
       {{ trigger.id != 'cancel_button'
+         or trigger.event.event_type == 'noonlight_cancel_requested'
          or (trigger.event.data.action | default('')).startswith('NOONLIGHT_CANCEL_') }}
 
 variables:
@@ -177,6 +227,10 @@ variables:
     {{ ns.targets | unique | list }}
   alarm_id_helper: !input alarm_id_helper
   cancel_service_available: !input cancel_service_available
+  alarm_panel: !input alarm_panel
+  panel_code: !input panel_code
+  disarm_watch_minutes: !input disarm_watch_minutes
+  has_panel: "{{ alarm_panel is string and alarm_panel != '' }}"
   result_timeout: !input result_timeout
   push_webhooks: !input push_webhooks
   status_card: !input status_card
@@ -228,6 +282,21 @@ actions:
               notification_id: "{{ 'missing_phone_' ~ this.entity_id }}"
       - stop: Phone check only
 
+  # Card first: some branches below wait for a long time.
+  - if: "{{ status_card and trigger.id != 'cancel_button' }}"
+    then:
+      - action: persistent_notification.create
+        data:
+          notification_id: noonlight_status
+          title: Noonlight status
+          message: >-
+            **{{ trigger.id | title }}** {{ env_label }} at {{ now().strftime('%H:%M:%S') }}
+
+            {{ d.alarm_cause | default('') }} {{ d.error | default('') }}
+            {% if d.alarm_id is defined %}Alarm ID: {{ d.alarm_id }}{% endif %}
+
+            Full timeline: Logbook, search "Noonlight".
+
   - choose:
       # ---- attempted: the integration started talking to Noonlight -------
       - conditions: "{{ trigger.id == 'attempted' }}"
@@ -278,6 +347,12 @@ actions:
         sequence:
           - variables:
               can_cancel: "{{ env == 'local' or cancel_service_available }}"
+              # Only police alarms belong to the panel. A fire alarm must
+              # never be cancelled because someone disarmed to get out.
+              disarm_cancels: "{{ has_panel and (d.services | default([])) == ['police'] }}"
+              show_disarm: >-
+                {{ can_cancel and disarm_cancels
+                   and (panel_code != '' or state_attr(alarm_panel, 'code_format') is none) }}
           - if: "{{ alarm_id_helper is string and alarm_id_helper != '' }}"
             then:
               - action: input_text.set_value
@@ -301,7 +376,8 @@ actions:
                         title: "Noonlight {{ env_label }} {{ what }} alarm ACTIVE"
                         message: >-
                           {{ d.alarm_cause }}. Noonlight is contacting you now.
-                          {% if not can_cancel %}To cancel: answer Noonlight's call or text and give your PIN.{% endif %}
+                          {% if not can_cancel %}To cancel: answer Noonlight's call or text and give your PIN.
+                          {%- elif disarm_cancels %}Disarming the alarm cancels it.{% endif %}
                           ID {{ d.alarm_id }}
                         data:
                           tag: "{{ 'noonlight_' ~ d.alarm_id }}"
@@ -310,8 +386,11 @@ actions:
                           priority: high
                           channel: alarm_stream
                           actions: >-
-                            {{ [{'action': 'NOONLIGHT_CANCEL_' ~ d.alarm_id, 'title': 'Cancel Noonlight alarm'}]
-                               if can_cancel else [] }}
+                            {% if show_disarm %}{{ [{'action': 'NOONLIGHT_CANCEL_DISARM_' ~ d.alarm_id,
+                                                     'title': 'Disarm', 'authenticationRequired': true}] }}
+                            {%- elif can_cancel %}{{ [{'action': 'NOONLIGHT_CANCEL_' ~ d.alarm_id,
+                                                       'title': 'Cancel Noonlight alarm'}] }}
+                            {%- else %}[]{% endif %}
               - repeat:
                   for_each: "{{ household_targets }}"
                   sequence:
@@ -320,6 +399,59 @@ actions:
                       data:
                         title: "Noonlight {{ env_label }} {{ what }} alarm ACTIVE"
                         message: "{{ d.alarm_cause }}. Expect a call or text from Noonlight."
+
+          # Disarm watch: the panel being disarmed now also cancels Noonlight.
+          # Ends quietly if the alarm is cancelled or closed some other way.
+          - if: "{{ disarm_cancels }}"
+            then:
+              - wait_for_trigger:
+                  - trigger: state
+                    entity_id: !input alarm_panel
+                    to: disarmed
+                    id: disarmed
+                  - trigger: event
+                    event_type: noonlight_alarm_canceled
+                    event_data:
+                      alarm_id: "{{ d.alarm_id }}"
+                  - trigger: event
+                    event_type: noonlight_alarm_ended
+                    event_data:
+                      alarm_id: "{{ d.alarm_id }}"
+                  - trigger: event
+                    event_type: noonlight_cancel_requested
+                    event_data:
+                      alarm_id: "{{ d.alarm_id }}"
+                  - trigger: event
+                    event_type: mobile_app_notification_action
+                    event_data:
+                      action: "{{ 'NOONLIGHT_CANCEL_' ~ d.alarm_id }}"
+                  - trigger: event
+                    event_type: mobile_app_notification_action
+                    event_data:
+                      action: "{{ 'NOONLIGHT_CANCEL_DISARM_' ~ d.alarm_id }}"
+                timeout:
+                  minutes: "{{ disarm_watch_minutes }}"
+                continue_on_timeout: false
+              - if: "{{ wait.trigger and wait.trigger.id == 'disarmed' }}"
+                then:
+                  - if: "{{ can_cancel }}"
+                    then:
+                      - event: noonlight_cancel_requested
+                        event_data:
+                          alarm_id: "{{ d.alarm_id }}"
+                          source: panel disarmed
+                    else:
+                      - repeat:
+                          for_each: "{{ notify_targets }}"
+                          sequence:
+                            - action: "{{ repeat.item }}"
+                              continue_on_error: true
+                              data:
+                                title: Noonlight alarm still ACTIVE
+                                message: >-
+                                  The panel is disarmed, but Home Assistant can't cancel
+                                  Noonlight. Answer their call or text and give your PIN.
+                                data: "{{ dict(critical, tag='noonlight_' ~ d.alarm_id) }}"
 
       # ---- failed: Noonlight was NOT reached ----------------------------
       - conditions: "{{ trigger.id == 'failed' }}"
@@ -381,16 +513,25 @@ actions:
                         title: "Noonlight alarm cancelled"
                         message: "False alarm, cancelled from Home Assistant."
 
-      # ---- cancel button on the "ACTIVE" push ----------------------------
+      # ---- cancel: button on the "ACTIVE" push, or a disarm ---------------
       - conditions: "{{ trigger.id == 'cancel_button' }}"
         sequence:
           - variables:
-              alarm_id: "{{ trigger.event.data.action[17:] }}"
+              requested: "{{ trigger.event.event_type == 'noonlight_cancel_requested' }}"
+              # Button IDs: NOONLIGHT_CANCEL_<id> or NOONLIGHT_CANCEL_DISARM_<id>
+              raw_id: "{{ d.alarm_id | default('') if requested else d.action[17:] }}"
+              disarm_panel: "{{ not requested and (raw_id | string).startswith('DISARM_') }}"
+              alarm_id: "{{ (raw_id | string)[7:] if disarm_panel else raw_id }}"
+              source: >-
+                {{ d.source | default('an automation') if requested
+                   else ('the Disarm button' if disarm_panel else 'the phone') }}
+          - condition: template
+            value_template: "{{ alarm_id != '' }}"
           - action: logbook.log
             data:
               name: Noonlight
-              message: "cancel requested from phone for alarm {{ alarm_id }}"
-          - if: "{{ alarm_id.startswith('LOCAL-') }}"
+              message: "cancel requested by {{ source }} for alarm {{ alarm_id }}"
+          - if: "{{ (alarm_id | string).startswith('LOCAL-') }}"
             then:
               - event: noonlight_alarm_canceled
                 event_data:
@@ -403,6 +544,34 @@ actions:
                 data:
                   alarm_id: "{{ alarm_id }}"
                 continue_on_error: true
+          # Disarm button: Noonlight is cancelled first, then the panel.
+          - if: "{{ disarm_panel and has_panel and not is_state(alarm_panel, 'disarmed') }}"
+            then:
+              # Give the disarm watch a moment to see the button first. A wait
+              # that sees two triggers in the same instant keeps the last one,
+              # and that would be this disarm: a second cancel.
+              - delay: 1
+              - action: alarm_control_panel.alarm_disarm
+                target:
+                  entity_id: "{{ alarm_panel }}"
+                data: "{{ {'code': panel_code} if panel_code else {} }}"
+                continue_on_error: true
+              - wait_template: "{{ is_state(alarm_panel, 'disarmed') }}"
+                timeout: "00:00:10"
+                continue_on_timeout: true
+              - if: "{{ not is_state(alarm_panel, 'disarmed') }}"
+                then:
+                  - repeat:
+                      for_each: "{{ notify_targets }}"
+                      sequence:
+                        - action: "{{ repeat.item }}"
+                          continue_on_error: true
+                          data:
+                            title: Panel did NOT disarm
+                            message: >-
+                              Noonlight was cancelled, but {{ state_attr(alarm_panel, 'friendly_name') }}
+                              is still {{ states(alarm_panel) }}. Disarm it from the app or keypad,
+                              and check the panel code in the status tracker.
 
       # ---- Noonlight webhooks --------------------------------------------
       - conditions: "{{ trigger.id == 'webhook' }}"
@@ -425,6 +594,12 @@ actions:
                   data:
                     name: Noonlight
                     message: "webhook: {{ text | trim }} (alarm {{ hook_alarm_id }})"
+                # Over on Noonlight's side: a later disarm must not cancel it again.
+                - if: "{{ ev.get('event_type') in ['alarm.closed', 'alarm.status.canceled'] }}"
+                  then:
+                    - event: noonlight_alarm_ended
+                      event_data:
+                        alarm_id: "{{ hook_alarm_id }}"
                 - if: "{{ push_webhooks }}"
                   then:
                     - repeat:
@@ -437,17 +612,3 @@ actions:
                               message: "{{ text | trim }}"
                               data:
                                 tag: "{{ 'noonlight_' ~ hook_alarm_id }}"
-
-  - if: "{{ status_card and trigger.id != 'cancel_button' }}"
-    then:
-      - action: persistent_notification.create
-        data:
-          notification_id: noonlight_status
-          title: Noonlight status
-          message: >-
-            **{{ trigger.id | title }}** {{ env_label }} at {{ now().strftime('%H:%M:%S') }}
-
-            {{ d.alarm_cause | default('') }} {{ d.error | default('') }}
-            {% if d.alarm_id is defined %}Alarm ID: {{ d.alarm_id }}{% endif %}
-
-            Full timeline: Logbook, search "Noonlight".
