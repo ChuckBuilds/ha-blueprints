@@ -81,7 +81,7 @@ async def main():
     for svc in ["notify.mobile_app_me", "notify.family", "logbook.log", "persistent_notification.create", "persistent_notification.dismiss",
                 "input_text.set_value", "noonlight.create_alarm", "noonlight.cancel_alarm",
                 "alarm_control_panel.alarm_trigger", "alarm_control_panel.alarm_disarm",
-                "alarm_control_panel.alarm_arm_away"]:
+                "alarm_control_panel.alarm_arm_away", "tts.speak", "media_player.volume_set"]:
         d, s = svc.split(".")
         hass.services.async_register(d, s, rec(svc))
 
@@ -95,6 +95,7 @@ async def main():
     for s in ["binary_sensor.front_door", "binary_sensor.smoke", "binary_sensor.motion"]:
         hass.states.async_set(s, "off")
     hass.states.async_set("zone.home", "1")
+    hass.states.async_set("binary_sensor.kitchen_smoke", "off", {"device_class": "smoke"})
     hass.states.async_set("lock.front", "locked")
     from homeassistant import config_entries as ce
     phone_entry = ce.ConfigEntry(data={}, domain="mobile_app", title="me", version=1, minor_version=1,
@@ -134,7 +135,9 @@ async def main():
                               household_notify_service="notify.family",
                               alarm_id_helper="input_text.noonlight_last_alarm_id",
                               cancel_service_available=True, result_timeout=10,
-                              alarm_panel=P, panel_code="1234")},
+                              alarm_panel=P, panel_code="1234",
+                              smoke_sensors=["binary_sensor.kitchen_smoke"], speakers=["media_player.kitchen"],
+                              tts_entity="tts.test", speaker_volume=60)},
         {"id": "presence", "alias": "presence", **bp("alarm_presence_arm_disarm.yaml", alarm_panel=P, arm_delay=0)},
     ]})
     await hass.async_block_till_done()
@@ -359,6 +362,43 @@ async def main():
     hass.states.async_set(P, "disarmed"); await settle(1)
     check("cancel requested by event -> one cancel, then disarm adds none",
           took("noonlight.cancel_alarm") == [{"alarm_id": "NOSVC1"}], took("noonlight.cancel_alarm"))
+
+    # 6g-6j. fire / medical: a disarm or the smoke clearing WARNS, never cancels
+    def still_active(what):
+        return [d for n, d in calls if n == "notify.mobile_app_me" and d.get("title") == f"{what} alarm still ACTIVE"]
+
+    hass.states.async_set("binary_sensor.kitchen_smoke", "on", {"device_class": "smoke"})
+    await active("FIRE2", services=("fire",))
+    hass.states.async_set("binary_sensor.kitchen_smoke", "off", {"device_class": "smoke"}); await settle(1)
+    w = still_active("Fire")
+    check("smoke cleared during fire alarm -> critical 'still ACTIVE' push with Cancel",
+          w and "smoke cleared" in w[0]["message"] and w[0]["data"]["push"]["interruption-level"] == "critical"
+          and [a["action"] for a in w[0]["data"]["actions"]] == ["NOONLIGHT_CANCEL_FIRE2"], w or pushes())
+    check("smoke cleared -> spoken on the speakers at 60%",
+          [d for d in took("tts.speak") if d.get("media_player_entity_id") == ["media_player.kitchen"]
+           and "still active" in d.get("message", "")] and took("media_player.volume_set")
+          and took("media_player.volume_set")[0]["volume_level"] == 0.6, calls)
+    check("smoke cleared -> fire alarm NOT cancelled", not took("noonlight.cancel_alarm"), took("noonlight.cancel_alarm"))
+
+    await active("FIRE3", services=("fire",))
+    hass.states.async_set(P, "disarmed"); await settle(1)
+    w = still_active("Fire")
+    check("disarm during fire alarm -> 'still ACTIVE' warning, no cancel",
+          w and "was disarmed" in w[0]["message"] and not took("noonlight.cancel_alarm"), w or pushes())
+
+    hass.states.async_set("binary_sensor.kitchen_smoke", "on", {"device_class": "smoke"})
+    await active("POL2")
+    hass.states.async_set("binary_sensor.kitchen_smoke", "off", {"device_class": "smoke"}); await settle(0.5)
+    check("police alarm: smoke clearing -> no warning", not still_active("Police"), pushes())
+    hass.states.async_set(P, "disarmed"); await settle(1)
+    check("police alarm: ...and a disarm afterwards still cancels",
+          took("noonlight.cancel_alarm") == [{"alarm_id": "POL2"}], took("noonlight.cancel_alarm"))
+
+    await active("MED1", services=("medical",))
+    press("NOONLIGHT_CANCEL_MED1"); await settle(0.5)
+    hass.states.async_set(P, "disarmed"); await settle(1)
+    check("medical cancelled by button, then disarm -> no warning", not still_active("Medical")
+          and took("noonlight.cancel_alarm") == [{"alarm_id": "MED1"}], pushes())
 
     # 7. Test mode, timeout -> sandbox endpoint + token
     await reset("Test")

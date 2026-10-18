@@ -296,8 +296,9 @@ variables:
     {% else %}
       {% set panel_sensors = (trigger.to_state.attributes.get('open_sensors') or {})
                               if trigger.entity_id.startswith('alarm_control_panel.') else {} %}
-      {% set first = (panel_sensors.keys() | list | select('search', '^binary_sensor\\.') | list | first)
-                     if panel_sensors is mapping else none %}
+      {% set found = (panel_sensors.keys() | list | select('search', '^binary_sensor\\.') | list)
+                     if panel_sensors is mapping else [] %}
+      {% set first = found[0] if found else none %}
       {% if first %}
         {% set kind = state_attr(first, 'device_class') or '' %}
         {% set name = (states[first].name if states[first] else first)[:60] %}
