@@ -136,7 +136,7 @@ the countdown starts", or it sounds on every normal arrival.
 | Panel code (for the Disarm button) | - | Adds the **Disarm** button, which needs the phone unlocked (iPhone, Android 12+). Not needed if the panel has no code. Stored in the automation like any input |
 | Show Disarm button | On | Off hides it, even with a code set or a code-less panel |
 | Require phone unlock to Disarm | On | Off lets Disarm run from the lock screen: anyone holding the phone could disarm |
-| Last tripped sensor helper | - | Optional `input_text` from the sensor blueprint, so Noonlight hears "Back door" |
+| Last tripped sensor helper | - | Optional `input_text` from the sensor blueprint, so Noonlight hears "Back door". Not needed with Alarmo: its panel reports the sensor itself |
 | Service | Police | Police, Fire or Medical |
 | Mode helper | - | `input_select` with Off / Local / Test / Live |
 | Sandbox server token | - | Test mode only. In YAML: `!secret noonlight_sandbox_token` |
@@ -163,6 +163,10 @@ the countdown starts", or it sounds on every normal arrival.
 **Tip: pick the phone *and* type its notify action.** Re-adding the server in the Companion app, logging in again or reinstalling it registers the phone as a new device, and a phone picked by device then gets no pushes. Its notify action name (`notify.mobile_app_<phone name>`) stays the same, so also type it under "Other notify action". Duplicates are removed, so you still get one push.
 
 **Missing phone warning.** If a phone you picked is removed, or the Companion app registers again as a new device, the automation raises a persistent notification naming itself (checked at start, on reload and when a device is removed). Re-pick the phone to clear it.
+
+### Using Alarmo instead of a Manual panel
+
+[Alarmo](https://github.com/nielsfaber/alarmo) adds per-person codes and manages sensors, entry/exit delays and open-door checks itself, so the **Alarm sensor trigger** blueprint isn't needed with it. Point the dispatch automation's trigger and panel at Alarmo's panel. The dispatch reads Alarmo's `open_sensors` and `arm_mode` attributes, so the push and the Noonlight operator still get "Front Door opened (armed night)". Set Alarmo's entry time to 0 for the one-wait setup. Alarmo doesn't call Noonlight; the dispatch and status tracker blueprints still do that.
 
 ## Noonlight status tracker
 
@@ -334,7 +338,7 @@ cancel. Put your real instructions back. Leave mode on Live.
 
 `tests/runtime_test.py` runs all four blueprints inside a headless Home
 Assistant with recorded (fake) notify, Noonlight and panel actions and plays
-through 69 scenarios. Needs `pip install homeassistant`; takes about 2.5
+through 71 scenarios. Needs `pip install homeassistant`; takes about 2.5
 minutes and exits non-zero on any failure.
 
 ## Disclaimer

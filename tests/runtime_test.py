@@ -263,6 +263,25 @@ async def main():
     check("button hidden -> push says Cancel", d["message"].startswith("Cancel, or a dispatch is simulated"), d["message"])
     hass.states.async_set(P_NOBUTTON, "disarmed"); await settle(1)
 
+    # 5e. Panel reports the tripping sensor (Alarmo open_sensors + arm_mode): used
+    #     instead of a stale "last tripped" helper.
+    await reset("Off")
+    saved_helper = hass.states.get("input_text.noonlight_last_trigger").state
+    hass.states.async_set("input_text.noonlight_last_trigger", "Stale Door opened (armed home)")
+    hass.states.async_set(P, "triggered", {"open_sensors": {"binary_sensor.front_door": "on"},
+                                           "arm_mode": "armed_night"}); await settle()
+    t = [x for x in pushes() if x.startswith("Police alarm: ")]
+    check("panel open_sensors -> 'front door opened (armed night)'", t and t[0] == "Police alarm: front door opened (armed night)", t)
+    hass.states.async_set(P, "disarmed"); await settle(1)
+    calls.clear()
+    hass.states.async_set(P, "triggered", {"open_sensors": {"binary_sensor.motion": "on"},
+                                           "arm_mode": "armed_away"}); await settle()
+    t = [x for x in pushes() if x.startswith("Police alarm: ")]
+    check("panel open_sensors motion -> 'Motion detected: motion (armed away)'",
+          t and t[0] == "Police alarm: Motion detected: motion (armed away)", t)
+    hass.states.async_set(P, "disarmed"); await settle(1)
+    hass.states.async_set("input_text.noonlight_last_trigger", saved_helper)
+
     # 6. Live + Dispatch now -> production endpoint, no sandbox token, tracker reports ACTIVE
     await reset("Live")
     hass.states.async_set(P, "triggered"); await settle()
