@@ -282,16 +282,35 @@ variables:
   extra_message: !input extra_message
   service_name: "{{ service | title }}"
   nl_mode: "{{ states(mode_helper) }}"
-  # Panel triggers say which sensor tripped it, when the sensor blueprint
-  # recorded one. Otherwise use the trigger entity's own name.
+  # What tripped the alarm, best source first:
+  #  1. The panel itself, if it reports the sensor (Alarmo's open_sensors +
+  #     arm_mode attributes). Read from the state at the moment of triggering.
+  #  2. The "Last tripped sensor" helper written by the sensor-trigger
+  #     blueprint (Manual panel setups).
+  #  3. The trigger entity's own name.
+  # Same wording as the sensor-trigger blueprint: "Front Door opened (armed
+  # night)", "Motion detected: Hall Motion (armed away)".
   cause_source: >-
     {% set helper = last_trigger_helper if last_trigger_helper is string else '' %}
     {% if trigger.id == 'phone_check' %}
-    {% elif trigger.entity_id.startswith('alarm_control_panel.')
-          and helper and states(helper) not in ['', 'unknown', 'unavailable'] %}
-      {{ states(helper) }}
     {% else %}
-      {{ trigger.to_state.name }}
+      {% set panel_sensors = (trigger.to_state.attributes.get('open_sensors') or {})
+                              if trigger.entity_id.startswith('alarm_control_panel.') else {} %}
+      {% set first = (panel_sensors.keys() | list | select('search', '^binary_sensor\\.') | list | first)
+                     if panel_sensors is mapping else none %}
+      {% if first %}
+        {% set kind = state_attr(first, 'device_class') or '' %}
+        {% set name = (states[first].name if states[first] else first)[:60] %}
+        {% set mode = (trigger.to_state.attributes.get('arm_mode') or '') | replace('_', ' ') %}
+        {% if kind in ['door', 'window', 'garage_door', 'opening'] %}{{ name }} opened
+        {%- elif kind in ['motion', 'occupancy', 'presence', 'moving'] %}Motion detected: {{ name }}
+        {%- else %}{{ name }} triggered{% endif %}{{ (' (' ~ mode ~ ')') if mode else '' }}
+      {% elif trigger.entity_id.startswith('alarm_control_panel.')
+              and helper and states(helper) not in ['', 'unknown', 'unavailable'] %}
+        {{ states(helper) }}
+      {% else %}
+        {{ trigger.to_state.name }}
+      {% endif %}
     {% endif %}
   alarm_cause: "{{ service_name }} alarm: {{ cause_source | trim }}"
   push_tag: "{{ 'noonlight_' ~ service }}"
