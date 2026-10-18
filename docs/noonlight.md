@@ -149,6 +149,8 @@ the countdown starts", or it sounds on every normal arrival.
 | Camera | - | Optional. Snapshot in the push; long-press on iPhone for the live feed |
 | Open when tapped | - | Optional dashboard path, e.g. `/lovelace/security` |
 | Extra message line | - | Optional. Templates work: `Front door lock: {{ states('lock.front_door') }}` |
+| Speak the countdown > Speakers | - | Optional. Says the countdown out loud every 15 s for whoever walks in without the app; stops on disarm / cancel / dispatch |
+| > Text-to-speech engine / What to say / Speaker volume | - / "Alarm. Disarm now, ..." / 0 | 0 = leave the volume alone |
 | When the countdown starts | - | Your actions: siren, lights, TTS warning. Run alongside the countdown |
 | When cancelled before dispatch | - | Your actions: siren off |
 | When handed to Noonlight | - | Your actions: lights on, unlock for responders |
@@ -208,6 +210,7 @@ the countdown starts", or it sounds on every normal arrival.
 | Result timeout | 45 s | How long to wait for Noonlight before warning |
 | Push Noonlight webhook updates | On | Off = logbook only |
 | Show latest status as a notification card | On | Sidebar notification with the last status |
+| When an alarm is ACTIVE > Turn on these lights | - | Optional. Full brightness the moment Noonlight confirms any alarm |
 
 ## Alarm sensor trigger
 

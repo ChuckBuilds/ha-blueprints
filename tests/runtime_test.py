@@ -29,6 +29,7 @@ MODE = "input_select.noonlight_mode"
 PC = "alarm_control_panel.check_panel"   # arming-check tests only
 P_NOUNLOCK = "alarm_control_panel.no_unlock_panel"
 P_NOBUTTON = "alarm_control_panel.no_button_panel"
+P_SPEAK = "alarm_control_panel.speak_panel"      # spoken-countdown tests only
 PANEL_CODE = {"code": None}  # set to require a disarm code in the panel mock
 
 
@@ -81,7 +82,7 @@ async def main():
     for svc in ["notify.mobile_app_me", "notify.family", "logbook.log", "persistent_notification.create", "persistent_notification.dismiss",
                 "input_text.set_value", "noonlight.create_alarm", "noonlight.cancel_alarm",
                 "alarm_control_panel.alarm_trigger", "alarm_control_panel.alarm_disarm",
-                "alarm_control_panel.alarm_arm_away", "tts.speak", "media_player.volume_set"]:
+                "alarm_control_panel.alarm_arm_away", "tts.speak", "media_player.volume_set", "light.turn_on"]:
         d, s = svc.split(".")
         hass.services.async_register(d, s, rec(svc))
 
@@ -119,7 +120,8 @@ async def main():
                              notify_devices=[phone.id], notify_service="notify.does_not_exist",
                              on_triggered_actions=[{"action": "notify.also_missing"}],
                              camera="camera.front", tap_url="/lovelace/security",
-                             extra_message="Lock: {{ states('lock.front') }}", countdown=10)},
+                             extra_message="Lock: {{ states('lock.front') }}", countdown=10,
+                             countdown_speakers=["media_player.hall"], countdown_tts="tts.test")},
         {"id": "medical_nounlock", "alias": "medical_nounlock", **bp("noonlight_dispatch.yaml",
                 trigger_entities=[P_NOUNLOCK], alarm_panel=P_NOUNLOCK, service="medical", mode_helper=MODE,
                 notify_service="notify.mobile_app_me", panel_code="1234", disarm_requires_unlock=False,
@@ -128,6 +130,9 @@ async def main():
                 trigger_entities=[P_NOBUTTON], alarm_panel=P_NOBUTTON, service="medical", mode_helper=MODE,
                 notify_service="notify.mobile_app_me", panel_code="1234", show_disarm_button=False,
                 countdown=10)},
+        {"id": "speak", "alias": "speak", **bp("noonlight_dispatch.yaml", trigger_entities=[P_SPEAK],
+                alarm_panel=P_SPEAK, service="medical", mode_helper=MODE, notify_service="notify.mobile_app_me",
+                countdown=30, countdown_speakers=["media_player.porch"], countdown_tts="tts.test", countdown_volume=40)},
         {"id": "fire", "alias": "fire", **bp("noonlight_dispatch.yaml", trigger_entities=["binary_sensor.smoke"], service="fire",
                            mode_helper=MODE, notify_devices=[phone.id], notify_service="notify.mobile_app_me",
                            countdown=10)},
@@ -137,7 +142,8 @@ async def main():
                               cancel_service_available=True, result_timeout=10,
                               alarm_panel=P, panel_code="1234",
                               smoke_sensors=["binary_sensor.kitchen_smoke"], speakers=["media_player.kitchen"],
-                              tts_entity="tts.test", speaker_volume=60)},
+                              tts_entity="tts.test", speaker_volume=60,
+                              active_lights={"entity_id": "light.everything"})},
         {"id": "presence", "alias": "presence", **bp("alarm_presence_arm_disarm.yaml", alarm_panel=P, arm_delay=0)},
     ]})
     await hass.async_block_till_done()
@@ -215,6 +221,23 @@ async def main():
     press(button("NOONLIGHT_PRECANCEL_")); await settle()
     check("Live cancel button -> cancelled push", last_push("Police alarm cancelled"), pushes())
     check("Live cancel button -> no create_alarm", not took("noonlight.create_alarm"))
+
+    # 3b. spoken countdown: repeats every 15 s, stops on Cancel
+    def porch():
+        return [d for d in took("tts.speak") if d.get("media_player_entity_id") == ["media_player.porch"]]
+    await reset("Off")
+    hass.states.async_set(P_SPEAK, "disarmed"); await settle(0.3)
+    hass.states.async_set(P_SPEAK, "triggered"); await settle(17)
+    check("spoken countdown repeats (2 times in 17 s)", len(porch()) == 2, porch())
+    check("speaker volume set to 40%", {"entity_id": ["media_player.porch"], "volume_level": 0.4}
+          in took("media_player.volume_set"), took("media_player.volume_set"))
+    hass.states.async_set(P_SPEAK, "disarmed"); await settle(16)
+    check("disarm stops the spoken countdown", len(porch()) == 2, porch())
+    calls.clear()
+    hass.states.async_set(P_SPEAK, "triggered"); await settle(1)
+    press(button("NOONLIGHT_PRECANCEL_")); await settle(16)
+    check("Cancel stops the spoken countdown", len(porch()) == 1, porch())
+    hass.states.async_set(P_SPEAK, "disarmed"); await settle(0.5)
 
     # 4. Live + stale button from an old notification does nothing
     await reset("Live")
@@ -310,6 +333,10 @@ async def main():
     check("alarm_cause names the sensor", ca and "front door" in ca[0].get("alarm_cause", ""), ca)
     check("tracker ACTIVE push", last_push("Noonlight LIVE Police alarm ACTIVE"), pushes())
     check("household told", [d for n, d in calls if n == "notify.family"], calls)
+    check("ACTIVE -> lights on at 100%", {"entity_id": ["light.everything"], "brightness_pct": 100}
+          in took("light.turn_on"), took("light.turn_on"))
+    spoke = [d for d in took("tts.speak") if d.get("media_player_entity_id") == ["media_player.hall"]]
+    check("countdown spoken on the speakers", spoke and "Disarm now" in spoke[0]["message"], took("tts.speak"))
     check("alarm id stored", hass.states.get("input_text.noonlight_last_alarm_id").state == "ABC123")
     act = last_push("Noonlight LIVE Police alarm ACTIVE")[0]["data"]["actions"]
     check("ACTIVE push has one Disarm button behind Face ID",

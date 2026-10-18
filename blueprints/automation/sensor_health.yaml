@@ -1,0 +1,157 @@
+blueprint:
+  name: Sensor health check (offline + low battery)
+  description: >-
+    Catches a dead door sensor before it matters, instead of the night the
+    alarm needed it.
+
+    Pick the sensors your alarm depends on (doors, windows, motion, smoke,
+    locks). Once a day, and whenever one has been offline for a while, you get
+    one push and a persistent notification listing every problem:
+      * offline - the sensor is unavailable / unknown
+      * low battery - the device's battery sensor is below your threshold,
+        or its "battery low" sensor is on
+
+    Battery sensors are found automatically on the same device, so pick the
+    door sensor itself, not its battery entity. When everything is healthy the
+    notification clears itself.
+  domain: automation
+  author: ChuckBuilds
+  homeassistant:
+    min_version: 2024.10.0
+  input:
+    sensors:
+      name: Sensors to watch
+      selector:
+        entity:
+          multiple: true
+          filter:
+            - domain:
+                - binary_sensor
+                - sensor
+                - lock
+    battery_threshold:
+      name: Low battery below
+      default: 20
+      selector:
+        number:
+          min: 5
+          max: 50
+          unit_of_measurement: "%"
+          mode: slider
+    check_time:
+      name: Daily check at
+      default: "09:00:00"
+      selector:
+        time:
+    offline_minutes:
+      name: Alert when offline for
+      description: >-
+        Also check as soon as a sensor has been offline this long. 0 = only
+        the daily check.
+      default: 30
+      selector:
+        number:
+          min: 0
+          max: 1440
+          unit_of_measurement: minutes
+          mode: box
+    notify_devices:
+      name: Phones to tell
+      description: A persistent notification is shown either way.
+      default: []
+      selector:
+        device:
+          multiple: true
+          filter:
+            - integration: mobile_app
+    notify_service:
+      name: Other notify action (optional)
+      description: >-
+        e.g. notify.mobile_app_your_phone. Typing your phone's action here as
+        well survives the Companion app registering the phone again;
+        duplicates are removed.
+      default: ""
+      selector:
+        text:
+
+mode: queued
+max: 5
+max_exceeded: silent
+
+variables:
+  sensors: !input sensors
+  battery_threshold: !input battery_threshold
+  offline_minutes: !input offline_minutes
+  notify_devices: !input notify_devices
+  notify_service: !input notify_service
+  notify_targets: >-
+    {% set ns = namespace(t=[]) %}
+    {% for d in notify_devices if device_attr(d, 'name') %}
+      {% set ns.t = ns.t + ['notify.mobile_app_' ~ (device_attr(d, 'name') | slugify)] %}
+    {% endfor %}
+    {% if notify_service %}{% set ns.t = ns.t + [notify_service] %}{% endif %}
+    {{ ns.t | unique | list }}
+
+triggers:
+  - trigger: time
+    at: !input check_time
+    id: daily
+  - trigger: state
+    entity_id: !input sensors
+    to:
+      - unavailable
+      - unknown
+    for:
+      minutes: !input offline_minutes
+    id: offline
+
+actions:
+  - condition: template
+    value_template: "{{ trigger.id == 'daily' or offline_minutes | float(0) > 0 }}"
+  - variables:
+      problems: >-
+        {% set ns = namespace(p=[]) %}
+        {% for e in sensors %}
+          {% set name = states[e].name if states[e] else e %}
+          {% if states(e) in ['unavailable', 'unknown'] %}
+            {% set ns.p = ns.p + [name ~ ': offline'] %}
+          {% else %}
+            {% set dev = device_id(e) %}
+            {% set siblings = device_entities(dev) if dev else [] %}
+            {% for b in siblings | select('match', 'sensor\\.') | select('is_state_attr', 'device_class', 'battery') %}
+              {% if states(b) | is_number and states(b) | float < battery_threshold | float %}
+                {% set ns.p = ns.p + [name ~ ': battery ' ~ (states(b) | float | round(0) | int) ~ '%'] %}
+              {% endif %}
+            {% endfor %}
+            {% if siblings | select('match', 'binary_sensor\\.') | select('is_state_attr', 'device_class', 'battery')
+                  | select('is_state', 'on') | list %}
+              {% set ns.p = ns.p + [name ~ ': battery low'] %}
+            {% endif %}
+          {% endif %}
+        {% endfor %}
+        {{ ns.p | unique | list }}
+  - if: "{{ problems | count == 0 }}"
+    then:
+      - action: persistent_notification.dismiss
+        data:
+          notification_id: "{{ 'sensor_health_' ~ this.entity_id }}"
+      - stop: All healthy
+  - action: logbook.log
+    data:
+      name: "{{ this.attributes.friendly_name }}"
+      message: "{{ problems | join('; ') }}"
+  - action: persistent_notification.create
+    data:
+      notification_id: "{{ 'sensor_health_' ~ this.entity_id }}"
+      title: "Alarm sensors need attention ({{ problems | count }})"
+      message: "{{ problems | map('regex_replace', '^', '- ') | join('\n') }}"
+  - repeat:
+      for_each: "{{ notify_targets }}"
+      sequence:
+        - action: "{{ repeat.item }}"
+          continue_on_error: true
+          data:
+            title: "Alarm sensors need attention ({{ problems | count }})"
+            message: "{{ problems | join(', ') }}"
+            data:
+              tag: "{{ 'sensor_health_' ~ this.entity_id }}"
