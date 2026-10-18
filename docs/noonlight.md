@@ -183,6 +183,7 @@ the countdown starts", or it sounds on every normal arrival.
 | Alarm failed | Critical "FAILED - call 911 yourself", household told |
 | **Disarm** tapped | Cancels Noonlight, then disarms the panel with the code. One tap, one alarm |
 | Panel disarmed (keypad, app, dashboard) | Cancels the active **police** alarm. Fire and medical are never cancelled by a disarm |
+| Fire / medical alarm active and the panel is disarmed, or a smoke detector clears | Critical "Fire alarm still ACTIVE - help is still on the way" push with a Cancel button, also spoken on your speakers. Nothing is cancelled |
 | Cancel button tapped | Local alarms: simulated cancel. Real alarms: `noonlight.cancel_alarm` |
 | `noonlight_cancel_requested` event (`alarm_id`) | Same as the cancel button; fire it from your own automations |
 | Alarm cancelled | Push + household told |
@@ -199,7 +200,11 @@ the countdown starts", or it sounds on every normal arrival.
 | Integration has `noonlight.cancel_alarm` | Off | See [Cancelling](#cancelling-an-alarm). Leave off unless your integration has it |
 | Alarm panel | - | Optional. Set it and disarming cancels police alarms too (see [One disarm](#one-disarm-stops-everything)) |
 | Panel code | - | For the Disarm button. A panel that needs a code you didn't enter gets a plain Cancel button |
-| Watch for a disarm for | 60 min | How long after dispatch a disarm still cancels. Not kept across an HA restart |
+| Watch for a disarm for | 60 min | How long after dispatch a disarm still cancels (police) or warns (fire / medical). Not kept across an HA restart |
+| Smoke / CO detectors | - | The detectors your Fire dispatch uses. One clearing during a fire alarm sends the still-active warning |
+| Speakers | - | Media players that speak the still-active warning |
+| Text-to-speech engine | - | e.g. `tts.home_assistant_cloud`. Needed for the speakers |
+| Speaker volume | 0 | Set the speakers to this first; 0 = leave the volume alone |
 | Result timeout | 45 s | How long to wait for Noonlight before warning |
 | Push Noonlight webhook updates | On | Off = logbook only |
 | Show latest status as a notification card | On | Sidebar notification with the last status |
@@ -303,7 +308,10 @@ become one:
 - Disarming the panel any other way (keypad, app, dashboard, presence
   automation) cancels the active police alarm too.
 - Fire and medical alarms are **never** cancelled by a disarm: you may be
-  disarming to get out.
+  disarming to get out. Instead, a disarm (or a smoke detector clearing) sends
+  a critical "still ACTIVE - help is still on the way" push with a Cancel
+  button, and speaks it on your speakers. Burnt toast: someone hushes the
+  detector, hears "the fire alarm is still active", and taps Cancel.
 - If the integration can't cancel (no `noonlight.cancel_alarm`), disarming
   gets you a critical "Noonlight alarm still ACTIVE - answer their call and
   give your PIN" push instead.

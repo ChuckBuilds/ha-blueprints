@@ -20,7 +20,9 @@ blueprint:
 
     One disarm stops everything: with an alarm panel set, disarming it (keypad,
     app, dashboard) also cancels an active police alarm. Fire and medical
-    alarms are never cancelled by a disarm.
+    alarms are never cancelled by a disarm; instead a disarm, or the smoke
+    clearing, sends a critical "still ACTIVE - help is still coming" push and
+    can announce it on your speakers.
 
     Everything is written to the logbook (filter on "Noonlight") so you can
     read the full alarm timeline afterwards.
@@ -115,9 +117,10 @@ blueprint:
         disarm_watch_minutes:
           name: Watch for a disarm for
           description: >-
-            How long after an alarm goes out a disarm still cancels it. Not
-            kept across a Home Assistant restart; the button and Noonlight's
-            call still work.
+            How long after an alarm goes out a disarm still cancels it (police)
+            or warns that help is still coming (fire / medical). Not kept
+            across a Home Assistant restart; the button and Noonlight's call
+            still work.
           default: 60
           selector:
             number:
@@ -125,6 +128,54 @@ blueprint:
               max: 240
               unit_of_measurement: minutes
               mode: box
+    still_active_section:
+      name: Still-active warnings (optional)
+      input:
+        smoke_sensors:
+          name: Smoke / CO detectors
+          description: >-
+            The detectors your Fire dispatch uses. If one clears while a fire
+            alarm is active (detector hushed, smoke gone), you're warned that
+            the fire department is still coming. A disarm warns too.
+          default: []
+          selector:
+            entity:
+              multiple: true
+              filter:
+                - domain: binary_sensor
+                  device_class:
+                    - smoke
+                    - carbon_monoxide
+                    - gas
+        speakers:
+          name: Speakers
+          description: >-
+            Also speak the warning here, so whoever is standing in the kitchen
+            hears it, not just a phone in a pocket.
+          default: []
+          selector:
+            entity:
+              multiple: true
+              filter:
+                - domain: media_player
+        tts_entity:
+          name: Text-to-speech engine
+          description: e.g. tts.home_assistant_cloud or tts.google_translate_en_com. Needed for the speakers.
+          default: []
+          selector:
+            entity:
+              filter:
+                - domain: tts
+        speaker_volume:
+          name: Speaker volume
+          description: Set the speakers to this volume first. 0 = leave the volume alone.
+          default: 0
+          selector:
+            number:
+              min: 0
+              max: 100
+              unit_of_measurement: "%"
+              mode: slider
     result_timeout:
       name: Result timeout
       description: >-
@@ -230,6 +281,10 @@ variables:
   alarm_panel: !input alarm_panel
   panel_code: !input panel_code
   disarm_watch_minutes: !input disarm_watch_minutes
+  smoke_sensors: !input smoke_sensors
+  speakers: !input speakers
+  tts_entity: !input tts_entity
+  speaker_volume: !input speaker_volume
   has_panel: "{{ alarm_panel is string and alarm_panel != '' }}"
   result_timeout: !input result_timeout
   push_webhooks: !input push_webhooks
@@ -400,58 +455,114 @@ actions:
                         title: "Noonlight {{ env_label }} {{ what }} alarm ACTIVE"
                         message: "{{ d.alarm_cause }}. Expect a call or text from Noonlight."
 
-          # Disarm watch: the panel being disarmed now also cancels Noonlight.
-          # Ends quietly if the alarm is cancelled or closed some other way.
-          - if: "{{ disarm_cancels }}"
+          # Watch until the alarm ends some other way:
+          #  * police: disarming the panel cancels Noonlight.
+          #  * fire / medical: disarming, or the smoke clearing, only WARNS that
+          #    help is still coming. Someone hushing a detector over burnt toast
+          #    must not walk away thinking the fire department was called off.
+          - variables:
+              is_fire: "{{ 'fire' in (d.services | default([])) }}"
+              warn_watch: >-
+                {{ not disarm_cancels and (d.services | default([])) != ['police']
+                   and (has_panel or (is_fire and smoke_sensors | count > 0)) }}
+          - if: "{{ disarm_cancels or warn_watch }}"
             then:
-              - wait_for_trigger:
-                  - trigger: state
-                    entity_id: !input alarm_panel
-                    to: disarmed
-                    id: disarmed
-                  - trigger: event
-                    event_type: noonlight_alarm_canceled
-                    event_data:
-                      alarm_id: "{{ d.alarm_id }}"
-                  - trigger: event
-                    event_type: noonlight_alarm_ended
-                    event_data:
-                      alarm_id: "{{ d.alarm_id }}"
-                  - trigger: event
-                    event_type: noonlight_cancel_requested
-                    event_data:
-                      alarm_id: "{{ d.alarm_id }}"
-                  - trigger: event
-                    event_type: mobile_app_notification_action
-                    event_data:
-                      action: "{{ 'NOONLIGHT_CANCEL_' ~ d.alarm_id }}"
-                  - trigger: event
-                    event_type: mobile_app_notification_action
-                    event_data:
-                      action: "{{ 'NOONLIGHT_CANCEL_DISARM_' ~ d.alarm_id }}"
-                timeout:
-                  minutes: "{{ disarm_watch_minutes }}"
-                continue_on_timeout: false
-              - if: "{{ wait.trigger and wait.trigger.id == 'disarmed' }}"
-                then:
-                  - if: "{{ can_cancel }}"
-                    then:
+              - repeat:
+                  sequence:
+                    - wait_for_trigger:
+                        - trigger: state
+                          entity_id: !input alarm_panel
+                          to: disarmed
+                          id: disarmed
+                        - trigger: state
+                          entity_id: !input smoke_sensors
+                          from: "on"
+                          to: "off"
+                          id: smoke_clear
+                        - trigger: event
+                          event_type: noonlight_alarm_canceled
+                          event_data:
+                            alarm_id: "{{ d.alarm_id }}"
+                        - trigger: event
+                          event_type: noonlight_alarm_ended
+                          event_data:
+                            alarm_id: "{{ d.alarm_id }}"
+                        - trigger: event
+                          event_type: noonlight_cancel_requested
+                          event_data:
+                            alarm_id: "{{ d.alarm_id }}"
+                        - trigger: event
+                          event_type: mobile_app_notification_action
+                          event_data:
+                            action: "{{ 'NOONLIGHT_CANCEL_' ~ d.alarm_id }}"
+                        - trigger: event
+                          event_type: mobile_app_notification_action
+                          event_data:
+                            action: "{{ 'NOONLIGHT_CANCEL_DISARM_' ~ d.alarm_id }}"
+                      timeout:
+                        minutes: "{{ disarm_watch_minutes }}"
+                      continue_on_timeout: false
+                  # Smoke clearing means nothing for a police or medical alarm: keep watching.
+                  until: "{{ not wait.trigger or wait.trigger.id != 'smoke_clear' or is_fire }}"
+              - variables:
+                  reason: "{{ wait.trigger.id if wait.trigger else '' }}"
+              - choose:
+                  - conditions: "{{ reason == 'disarmed' and disarm_cancels and can_cancel }}"
+                    sequence:
                       - event: noonlight_cancel_requested
                         event_data:
                           alarm_id: "{{ d.alarm_id }}"
                           source: panel disarmed
-                    else:
-                      - repeat:
-                          for_each: "{{ notify_targets }}"
-                          sequence:
-                            - action: "{{ repeat.item }}"
-                              continue_on_error: true
-                              data:
-                                title: Noonlight alarm still ACTIVE
-                                message: >-
-                                  The panel is disarmed, but Home Assistant can't cancel
-                                  Noonlight. Answer their call or text and give your PIN.
-                                data: "{{ dict(critical, tag='noonlight_' ~ d.alarm_id) }}"
+                  - conditions: "{{ reason in ['disarmed', 'smoke_clear'] }}"
+                    sequence:
+                      - variables:
+                          offer_cancel: "{{ can_cancel and not disarm_cancels }}"
+                          warn_message: >-
+                            {% if disarm_cancels %}The panel is disarmed, but Home Assistant can't cancel
+                            Noonlight. Answer their call or text and give your PIN.
+                            {%- else %}{{ 'The alarm was disarmed' if reason == 'disarmed' else 'The smoke cleared' }},
+                            but the {{ what | lower }} alarm was NOT cancelled: help is still on the way.
+                            {{ 'False alarm? Tap Cancel.' if offer_cancel
+                               else "False alarm? Answer Noonlight's call and give your PIN." }}{% endif %}
+                          speech: >-
+                            Warning. The {{ what | lower }} alarm is still active. Help is on the way.
+                            {{ 'If this is a false alarm, tap Cancel on your phone.' if offer_cancel
+                               else "If this is a false alarm, answer Noonlight's call and give your PIN." }}
+                      - action: logbook.log
+                        data:
+                          name: Noonlight
+                          message: "{{ what }} alarm {{ d.alarm_id }} still active after {{ reason | replace('_', ' ') }}; warned"
+                      # Speakers in their own branch: a missing TTS action can't stop the push.
+                      - parallel:
+                          - repeat:
+                              for_each: "{{ notify_targets }}"
+                              sequence:
+                                - action: "{{ repeat.item }}"
+                                  continue_on_error: true
+                                  data:
+                                    title: "{{ what }} alarm still ACTIVE"
+                                    message: "{{ warn_message }}"
+                                    data: >-
+                                      {{ dict(critical, tag='noonlight_' ~ d.alarm_id, actions=
+                                         [{'action': 'NOONLIGHT_CANCEL_' ~ d.alarm_id, 'title': 'Cancel Noonlight alarm'}]
+                                         if offer_cancel else []) }}
+                          - if: "{{ speakers | count > 0 and tts_entity is string and tts_entity != '' }}"
+                            then:
+                              - if: "{{ speaker_volume | int(0) > 0 }}"
+                                then:
+                                  - action: media_player.volume_set
+                                    target:
+                                      entity_id: "{{ speakers }}"
+                                    data:
+                                      volume_level: "{{ speaker_volume | int / 100 }}"
+                                    continue_on_error: true
+                              - action: tts.speak
+                                target:
+                                  entity_id: "{{ tts_entity }}"
+                                data:
+                                  media_player_entity_id: "{{ speakers }}"
+                                  message: "{{ speech }}"
+                                continue_on_error: true
 
       # ---- failed: Noonlight was NOT reached ----------------------------
       - conditions: "{{ trigger.id == 'failed' }}"
