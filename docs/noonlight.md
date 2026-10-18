@@ -38,7 +38,9 @@ written to the logbook.
        anything else -> "NOT SENT - call 911 yourself"
                                               |
               status tracker hears the result |
-       created -> "ACTIVE" push + [Cancel Noonlight alarm] + household told
+       created -> "ACTIVE" push + [Disarm] + household told
+                  (Disarm, or disarming the panel any other way, also
+                   cancels Noonlight: one disarm stops everything)
        failed  -> CRITICAL "FAILED - call 911 yourself"
        nothing within 45 s -> CRITICAL "no response - call 911 yourself"
                                               |
@@ -173,9 +175,12 @@ the countdown starts", or it sounds on every normal arrival.
 | Event | What happens |
 |---|---|
 | Dispatch requested | Logbook. If no result arrives within the timeout: critical "no response - call 911 yourself" |
-| Alarm created | Critical "ACTIVE" push with alarm ID (+ Cancel button), household told, ID saved |
+| Alarm created | Critical "ACTIVE" push with alarm ID and a button, household told, ID saved. Police alarm + panel set: **Disarm** (Face ID); otherwise **Cancel Noonlight alarm** |
 | Alarm failed | Critical "FAILED - call 911 yourself", household told |
+| **Disarm** tapped | Cancels Noonlight, then disarms the panel with the code. One tap, one alarm |
+| Panel disarmed (keypad, app, dashboard) | Cancels the active **police** alarm. Fire and medical are never cancelled by a disarm |
 | Cancel button tapped | Local alarms: simulated cancel. Real alarms: `noonlight.cancel_alarm` |
+| `noonlight_cancel_requested` event (`alarm_id`) | Same as the cancel button; fire it from your own automations |
 | Alarm cancelled | Push + household told |
 | Noonlight webhook | Plain-English push: 911 contacted / closed / cancelled by phone |
 
@@ -188,6 +193,9 @@ the countdown starts", or it sounds on every normal arrival.
 | Household phones / notify action | - | Optional. Everyone who may get Noonlight's calls |
 | Last alarm ID helper | - | Optional `input_text` |
 | Integration has `noonlight.cancel_alarm` | Off | See [Cancelling](#cancelling-an-alarm). Leave off unless your integration has it |
+| Alarm panel | - | Optional. Set it and disarming cancels police alarms too (see [One disarm](#one-disarm-stops-everything)) |
+| Panel code | - | For the Disarm button. A panel that needs a code you didn't enter gets a plain Cancel button |
+| Watch for a disarm for | 60 min | How long after dispatch a disarm still cancels. Not kept across an HA restart |
 | Result timeout | 45 s | How long to wait for Noonlight before warning |
 | Push Noonlight webhook updates | On | Off = logbook only |
 | Show latest status as a notification card | On | Sidebar notification with the last status |
@@ -277,8 +285,26 @@ picked phones arming as Vacation, the older zone + auto-disarm setup, and the mi
 |---|---|
 | Entry delay (panel `pending`) | Disarm the panel. Nothing else happens |
 | Countdown | Tap **Cancel - I'm safe**, or disarm the panel |
-| After dispatch, Local mode | Tap **Cancel Noonlight alarm** |
-| After dispatch, Test / Live | Answer Noonlight's call or text and give your **PIN**. Or tap **Cancel Noonlight alarm** if your integration has `noonlight.cancel_alarm` |
+| After dispatch, Local mode | Tap **Disarm** on the ACTIVE push, or disarm the panel |
+| After dispatch, Test / Live | Tap **Disarm** or disarm the panel, if your integration has `noonlight.cancel_alarm`. Otherwise answer Noonlight's call or text and give your **PIN** |
+
+### One disarm stops everything
+
+Without this, a false alarm after dispatch is two alarms to turn off: the
+panel and Noonlight. Pick the alarm panel in the status tracker and they
+become one:
+
+- **Disarm** on the ACTIVE push (Face ID / passcode) cancels Noonlight, then
+  disarms the panel.
+- Disarming the panel any other way (keypad, app, dashboard, presence
+  automation) cancels the active police alarm too.
+- Fire and medical alarms are **never** cancelled by a disarm: you may be
+  disarming to get out.
+- If the integration can't cancel (no `noonlight.cancel_alarm`), disarming
+  gets you a critical "Noonlight alarm still ACTIVE - answer their call and
+  give your PIN" push instead.
+- Once Noonlight closes or cancels the alarm on their side (webhook), a later
+  disarm does nothing more.
 
 The current Noonlight Enhanced release has no cancel action; a pull request
 adding `noonlight.cancel_alarm` is proposed upstream. Until your installed

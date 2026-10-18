@@ -133,7 +133,8 @@ async def main():
         {"id": "tracker", "alias": "tracker", **bp("noonlight_status_tracker.yaml", notify_devices=[phone.id],
                               household_notify_service="notify.family",
                               alarm_id_helper="input_text.noonlight_last_alarm_id",
-                              cancel_service_available=True, result_timeout=10)},
+                              cancel_service_available=True, result_timeout=10,
+                              alarm_panel=P, panel_code="1234")},
         {"id": "presence", "alias": "presence", **bp("alarm_presence_arm_disarm.yaml", alarm_panel=P, arm_delay=0)},
     ]})
     await hass.async_block_till_done()
@@ -289,10 +290,56 @@ async def main():
     check("household told", [d for n, d in calls if n == "notify.family"], calls)
     check("alarm id stored", hass.states.get("input_text.noonlight_last_alarm_id").state == "ABC123")
     act = last_push("Noonlight LIVE Police alarm ACTIVE")[0]["data"]["actions"]
-    check("ACTIVE push has cancel button", act and act[0]["action"] == "NOONLIGHT_CANCEL_ABC123", act)
-    press("NOONLIGHT_CANCEL_ABC123"); await settle()
-    check("cancel button -> cancel_alarm(ABC123)", took("noonlight.cancel_alarm") == [{"alarm_id": "ABC123"}], took("noonlight.cancel_alarm"))
+    check("ACTIVE push has one Disarm button behind Face ID",
+          act == [{"action": "NOONLIGHT_CANCEL_DISARM_ABC123", "title": "Disarm", "authenticationRequired": True}], act)
+    press("NOONLIGHT_CANCEL_DISARM_ABC123"); await settle(2.5)
+    check("Disarm button -> cancel_alarm(ABC123) exactly once (no second cancel from the disarm)",
+          took("noonlight.cancel_alarm") == [{"alarm_id": "ABC123"}], took("noonlight.cancel_alarm"))
+    check("Disarm button -> panel disarmed with the code",
+          hass.states.get(P).state == "disarmed" and {"entity_id": [P], "code": "1234"} in took("alarm_control_panel.alarm_disarm"),
+          took("alarm_control_panel.alarm_disarm"))
     check("cancel confirmed push", last_push("Noonlight alarm cancelled"), pushes())
+
+    # 6b-6f. one disarm stops everything (tracker alone, events fired directly)
+    async def active(alarm_id, services=("police",), env="production", panel="armed_away"):
+        hass.states.async_set(P, panel); await settle(0.3)
+        calls.clear()
+        hass.bus.async_fire("noonlight_alarm_created", {"alarm_id": alarm_id, "environment": env,
+                            "services": list(services), "alarm_cause": "Front Door opened (armed away)"})
+        await settle(0.5)
+
+    await active("KEY1")
+    check("ACTIVE push says disarming cancels", "Disarming the alarm cancels it" in
+          last_push("Noonlight LIVE Police alarm ACTIVE")[0]["message"], pushes())
+    hass.states.async_set(P, "disarmed"); await settle(1)
+    check("keypad disarm -> cancel_alarm(KEY1) once", took("noonlight.cancel_alarm") == [{"alarm_id": "KEY1"}],
+          took("noonlight.cancel_alarm"))
+    check("keypad disarm -> cancelled push", last_push("Noonlight alarm cancelled"), pushes())
+
+    await active("FIRE1", services=("fire",))
+    hass.states.async_set(P, "disarmed"); await settle(1)
+    check("fire alarm: disarm does NOT cancel", not took("noonlight.cancel_alarm"), took("noonlight.cancel_alarm"))
+    check("fire alarm: plain Cancel button, no Disarm",
+          [a["title"] for a in last_push("Noonlight LIVE Fire alarm ACTIVE")[0]["data"]["actions"]] == ["Cancel Noonlight alarm"],
+          pushes())
+
+    await active("CLOSED1")
+    hass.bus.async_fire("noonlight_webhook_received", {"webhook_id": "x", "payload": [
+        {"event_type": "alarm.closed", "meta": {"alarm_id": "CLOSED1"}}]}); await settle(0.5)
+    hass.states.async_set(P, "disarmed"); await settle(1)
+    check("closed by Noonlight, then disarm -> no cancel attempt", not took("noonlight.cancel_alarm"),
+          took("noonlight.cancel_alarm"))
+
+    await active("LOCAL-1", env="local")
+    hass.states.async_set(P, "disarmed"); await settle(1)
+    check("Local alarm: disarm -> simulated cancel, no cancel_alarm call",
+          last_push("Noonlight alarm cancelled") and not took("noonlight.cancel_alarm"), pushes())
+
+    await active("NOSVC1")
+    hass.bus.async_fire("noonlight_cancel_requested", {"alarm_id": "NOSVC1"}); await settle(0.5)
+    hass.states.async_set(P, "disarmed"); await settle(1)
+    check("cancel requested by event -> one cancel, then disarm adds none",
+          took("noonlight.cancel_alarm") == [{"alarm_id": "NOSVC1"}], took("noonlight.cancel_alarm"))
 
     # 7. Test mode, timeout -> sandbox endpoint + token
     await reset("Test")
