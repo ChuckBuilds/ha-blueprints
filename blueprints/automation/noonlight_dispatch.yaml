@@ -206,6 +206,45 @@ blueprint:
           selector:
             text:
               multiline: true
+    speak_section:
+      name: Speak the countdown (optional)
+      collapsed: true
+      input:
+        countdown_speakers:
+          name: Speakers
+          description: >-
+            Say the countdown out loud, for whoever walks in without the app
+            (guests, kids, a dog walker). Repeats every 15 s until the alarm is
+            disarmed, cancelled or dispatched. Empty = silent countdown.
+          default: []
+          selector:
+            entity:
+              multiple: true
+              filter:
+                - domain: media_player
+        countdown_tts:
+          name: Text-to-speech engine
+          description: e.g. tts.home_assistant_cloud or tts.google_translate_en_com.
+          default: []
+          selector:
+            entity:
+              filter:
+                - domain: tts
+        countdown_speech:
+          name: What to say
+          default: Alarm. Disarm now, or the monitoring service will be called.
+          selector:
+            text:
+        countdown_volume:
+          name: Speaker volume
+          description: Set the speakers to this volume first. 0 = leave the volume alone.
+          default: 0
+          selector:
+            number:
+              min: 0
+              max: 100
+              unit_of_measurement: "%"
+              mode: slider
     custom_section:
       name: Your extra actions (optional)
       collapsed: true
@@ -270,6 +309,10 @@ variables:
   notify_devices: !input notify_devices
   notify_service: !input notify_service
   countdown: !input countdown
+  countdown_speakers: !input countdown_speakers
+  countdown_tts: !input countdown_tts
+  countdown_speech: !input countdown_speech
+  countdown_volume: !input countdown_volume
   camera: !input camera
   tap_url: !input tap_url
   panel_code: !input panel_code
@@ -424,6 +467,55 @@ actions:
                            {'action': action_dispatch, 'title': 'Dispatch now'}]), **push_media) }}
           - choose: []
             default: !input on_triggered_actions
+
+      # ---- Spoken countdown (optional) -------------------------------------
+      # Own branch: a speaker problem can't touch the dispatch. Stops on any
+      # cancel / disarm / dispatch-now, or when the countdown runs out.
+      - if: "{{ countdown_speakers | count > 0 and countdown_tts is string and countdown_tts != '' }}"
+        then:
+          - variables:
+              speak_until: "{{ (now() + timedelta(seconds=countdown | int(60))).isoformat() }}"
+          - if: "{{ countdown_volume | int(0) > 0 }}"
+            then:
+              - action: media_player.volume_set
+                target:
+                  entity_id: "{{ countdown_speakers }}"
+                data:
+                  volume_level: "{{ countdown_volume | int / 100 }}"
+                continue_on_error: true
+          - repeat:
+              sequence:
+                - action: tts.speak
+                  target:
+                    entity_id: "{{ countdown_tts }}"
+                  data:
+                    media_player_entity_id: "{{ countdown_speakers }}"
+                    message: "{{ countdown_speech }}"
+                  continue_on_error: true
+                - wait_for_trigger:
+                    - trigger: event
+                      event_type: mobile_app_notification_action
+                      event_data:
+                        action: "{{ action_cancel }}"
+                    - trigger: event
+                      event_type: mobile_app_notification_action
+                      event_data:
+                        action: "{{ action_dispatch }}"
+                    - trigger: event
+                      event_type: mobile_app_notification_action
+                      event_data:
+                        action: "{{ action_disarm }}"
+                    - trigger: state
+                      entity_id: !input alarm_panel
+                      to: disarmed
+                  timeout:
+                    seconds: "{{ [15, [(as_datetime(speak_until) - now()).total_seconds() | int(0), 1] | max] | min }}"
+                  continue_on_timeout: true
+              # Stop on a button / disarm, a wait that failed to start
+              # (time left, no trigger), or the end of the countdown.
+              until: >-
+                {{ wait.trigger is not none or (wait.remaining or 0) > 0
+                   or now() + timedelta(seconds=5) >= as_datetime(speak_until) }}
 
       # ---- 2. Countdown, then cancel or dispatch -----------------------------
       - sequence:

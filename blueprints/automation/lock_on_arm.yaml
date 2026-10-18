@@ -1,0 +1,142 @@
+blueprint:
+  name: Lock the doors when the alarm is armed
+  description: >-
+    Locks your doors once the alarm panel has finished arming, so you never get
+    locked out (or in) while the exit delay is still running and you're
+    heading out the door.
+
+    Works with any alarm panel (Alarmo, Manual, ...). With Alarmo the panel
+    goes "arming" during the exit delay and "armed_away" after it; this waits
+    for "armed".
+
+    Every lock is checked 30 s later. One that didn't lock (jammed, offline,
+    door not closed) gets a push and a persistent notification naming it.
+  domain: automation
+  author: ChuckBuilds
+  homeassistant:
+    min_version: 2024.10.0
+  input:
+    alarm_panel:
+      name: Alarm panel
+      selector:
+        entity:
+          filter:
+            - domain: alarm_control_panel
+    locks:
+      name: Locks
+      selector:
+        entity:
+          multiple: true
+          filter:
+            - domain: lock
+    armed_states:
+      name: Lock when armed as
+      default:
+        - armed_away
+        - armed_vacation
+        - armed_night
+        - armed_home
+      selector:
+        select:
+          multiple: true
+          options:
+            - label: Away
+              value: armed_away
+            - label: Vacation
+              value: armed_vacation
+            - label: Night
+              value: armed_night
+            - label: Home
+              value: armed_home
+    notify_section:
+      name: If a lock fails (optional)
+      input:
+        notify_devices:
+          name: Phones to tell
+          description: A persistent notification is shown either way.
+          default: []
+          selector:
+            device:
+              multiple: true
+              filter:
+                - integration: mobile_app
+        notify_service:
+          name: Other notify action
+          description: >-
+            Optional, e.g. notify.mobile_app_your_phone. Typing your phone's
+            action here as well survives the Companion app registering the
+            phone again; duplicates are removed.
+          default: ""
+          selector:
+            text:
+
+# Disarming and re-arming starts over.
+mode: restart
+max_exceeded: silent
+
+variables:
+  locks: !input locks
+  notify_devices: !input notify_devices
+  notify_service: !input notify_service
+  notify_targets: >-
+    {% set ns = namespace(t=[]) %}
+    {% for d in notify_devices if device_attr(d, 'name') %}
+      {% set ns.t = ns.t + ['notify.mobile_app_' ~ (device_attr(d, 'name') | slugify)] %}
+    {% endfor %}
+    {% if notify_service %}{% set ns.t = ns.t + [notify_service] %}{% endif %}
+    {{ ns.t | unique | list }}
+
+triggers:
+  - trigger: state
+    entity_id: !input alarm_panel
+    to: !input armed_states
+
+actions:
+  - variables:
+      to_lock: "{{ locks | reject('is_state', 'locked') | list }}"
+  - condition: template
+    value_template: "{{ to_lock | count > 0 }}"
+  - action: lock.lock
+    target:
+      entity_id: "{{ to_lock }}"
+    # A jammed or offline lock raises an error; still check and report below.
+    continue_on_error: true
+  - wait_template: "{{ to_lock | reject('is_state', 'locked') | list | count == 0 }}"
+    timeout: "00:00:30"
+    continue_on_timeout: true
+  - variables:
+      failed: >-
+        {{ to_lock | reject('is_state', 'locked')
+           | map('state_attr', 'friendly_name') | list }}
+      failed_detail: >-
+        {% for l in to_lock | reject('is_state', 'locked') %}{{ state_attr(l, 'friendly_name') or l }} ({{ states(l) }}){{ ', ' if not loop.last }}{% endfor %}
+  - if: "{{ failed | count == 0 }}"
+    then:
+      - action: persistent_notification.dismiss
+        data:
+          notification_id: "{{ 'lock_on_arm_' ~ this.entity_id }}"
+      - stop: All locked
+  - action: logbook.log
+    data:
+      name: "{{ this.attributes.friendly_name }}"
+      message: "did NOT lock after arming: {{ failed_detail }}"
+  - action: persistent_notification.create
+    data:
+      notification_id: "{{ 'lock_on_arm_' ~ this.entity_id }}"
+      title: Door did NOT lock
+      message: >-
+        The alarm is {{ states(trigger.entity_id) | replace('_', ' ') }}, but
+        {{ failed_detail }} did not lock. Lock it from the app or check it for
+        a jam / low battery / open door.
+  - repeat:
+      for_each: "{{ notify_targets }}"
+      sequence:
+        - action: "{{ repeat.item }}"
+          continue_on_error: true
+          data:
+            title: Door did NOT lock
+            message: "Alarm {{ states(trigger.entity_id) | replace('_', ' ') }}, but {{ failed_detail }} did not lock."
+            data:
+              tag: "{{ 'lock_on_arm_' ~ this.entity_id }}"
+              push:
+                interruption-level: time-sensitive

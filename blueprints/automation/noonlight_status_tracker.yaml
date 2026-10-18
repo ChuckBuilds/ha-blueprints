@@ -176,6 +176,20 @@ blueprint:
               max: 100
               unit_of_measurement: "%"
               mode: slider
+    active_section:
+      name: When an alarm is ACTIVE (optional)
+      input:
+        active_lights:
+          name: Turn on these lights
+          description: >-
+            Turned on at full brightness the moment Noonlight confirms the
+            alarm (police, fire or medical): lights the way for you and for
+            responders, and tells an intruder they've been seen.
+          default: {}
+          selector:
+            target:
+              entity:
+                - domain: light
     result_timeout:
       name: Result timeout
       description: >-
@@ -285,6 +299,7 @@ variables:
   speakers: !input speakers
   tts_entity: !input tts_entity
   speaker_volume: !input speaker_volume
+  active_lights: !input active_lights
   has_panel: "{{ alarm_panel is string and alarm_panel != '' }}"
   result_timeout: !input result_timeout
   push_webhooks: !input push_webhooks
@@ -454,6 +469,13 @@ actions:
                       data:
                         title: "Noonlight {{ env_label }} {{ what }} alarm ACTIVE"
                         message: "{{ d.alarm_cause }}. Expect a call or text from Noonlight."
+              - if: "{{ active_lights is mapping and active_lights | length > 0 }}"
+                then:
+                  - action: light.turn_on
+                    target: "{{ active_lights }}"
+                    data:
+                      brightness_pct: 100
+                    continue_on_error: true
 
           # Watch until the alarm ends some other way:
           #  * police: disarming the panel cancels Noonlight.
