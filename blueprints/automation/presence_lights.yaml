@@ -1,0 +1,262 @@
+blueprint:
+  name: Presence-activated lights (multi-sensor, condition-aware)
+  description: >
+    One automation per area, replacing the copy-pasted
+    "presence -> turn on -> resettable off-timer -> turn off" flow.
+
+
+    Differences from the stock motion-light blueprint:
+
+
+    * Several presence sensors can cover one area. The lights only go out once
+    *every* sensor has been clear for the hold time, so a room with both an
+    mmWave and a PIR does not go dark while one of them still sees you.
+
+    * The hold timer is a trigger-level `for:`, not a `delay` inside the action
+    sequence. Home Assistant drops pending `for:` timers on a restart or an
+    automation reload, so both re-check the area after the hold time: a
+    restart cannot strand the lights on.
+
+    * Turn-on and turn-off are gated separately. "Turn-on conditions" decides
+    whether the lights come on at all; "Turn-off conditions" decides whether
+    they are allowed to go out. That covers "do not black out the room while
+    the bed is still occupied" without a second automation.
+
+    * "Blocked actions" runs instead of the normal turn-on when the turn-on
+    conditions fail - e.g. a 20% night-light instead of the full group.
+
+    * Extra actions hang off both edges for things that are not lights
+    (switches, plugs, scenes, media players).
+
+
+    Leave every optional field empty and this behaves like a plain motion
+    light.
+  domain: automation
+  author: ChuckBuilds
+  source_url: https://github.com/ChuckBuilds/ha-blueprints/blob/main/blueprints/automation/presence_lights.yaml
+
+  input:
+    core:
+      name: Sensors and lights
+      icon: mdi:motion-sensor
+      input:
+        presence_sensors:
+          name: Presence sensors
+          description: >
+            One or more binary sensors covering this area. Any of them turning
+            "on" triggers the lights; all of them must be clear before the
+            lights go out.
+          selector:
+            entity:
+              multiple: true
+              filter:
+                - domain: binary_sensor
+
+        lights:
+          name: Lights
+          description: The lights this automation controls.
+          selector:
+            target:
+              entity:
+                - domain: light
+
+        no_presence_wait:
+          name: Hold time
+          description: >
+            How long every sensor must stay clear before the lights are turned
+            off.
+          default:
+            hours: 0
+            minutes: 3
+            seconds: 0
+          selector:
+            duration:
+
+        brightness_pct:
+          name: Brightness
+          description: >
+            Brightness to use when turning on. Leave at 0 to turn the lights on
+            without touching brightness, which is what you want alongside
+            Adaptive Lighting.
+          default: 0
+          selector:
+            number:
+              min: 0
+              max: 100
+              step: 1
+              unit_of_measurement: "%"
+              mode: slider
+
+    gating:
+      name: Conditions
+      icon: mdi:gate
+      collapsed: true
+      input:
+        on_conditions:
+          name: Turn-on conditions
+          description: >
+            All must pass for the lights to come on. Empty means always on.
+            Typical entries: sun below horizon, a sleep-mode toggle off, a bed
+            occupancy sensor off.
+          default: []
+          selector:
+            condition:
+
+        off_conditions:
+          name: Turn-off conditions
+          description: >
+            All must pass for the lights to go off. Empty means always allowed.
+            Use this to hold lights on - e.g. never kill the bedroom lights
+            while somebody is still in bed.
+          default: []
+          selector:
+            condition:
+
+    extras:
+      name: Extra actions
+      icon: mdi:playlist-plus
+      collapsed: true
+      input:
+        blocked_actions:
+          name: Blocked actions
+          description: >
+            Runs instead of the normal turn-on when the turn-on conditions
+            fail. Leave empty to simply do nothing.
+          default: []
+          selector:
+            action:
+
+        extra_on_actions:
+          name: Extra turn-on actions
+          description: Runs after the lights are turned on.
+          default: []
+          selector:
+            action:
+
+        extra_off_actions:
+          name: Extra turn-off actions
+          description: Runs after the lights are turned off.
+          default: []
+          selector:
+            action:
+
+# Parallel, not queued: the restart re-check waits out the hold time, and a
+# queued detection would wait behind it with the room still dark.
+mode: parallel
+max: 25
+max_exceeded: silent
+
+variables:
+  presence_sensors: !input presence_sensors
+  no_presence_wait: !input no_presence_wait
+  brightness_pct: !input brightness_pct
+
+triggers:
+  - trigger: state
+    entity_id: !input presence_sensors
+    to: "on"
+    id: detected
+
+  - trigger: state
+    entity_id: !input presence_sensors
+    to: "off"
+    for: !input no_presence_wait
+    id: cleared
+
+  # A restart or reload drops the pending `for:` above. Sensors that are
+  # already clear never change again, so re-check the area instead.
+  - trigger: homeassistant
+    event: start
+    id: recheck
+  - trigger: event
+    event_type: automation_reloaded
+    id: recheck
+
+conditions: []
+
+actions:
+  - if:
+      - condition: trigger
+        id: recheck
+    then:
+      - delay: !input no_presence_wait
+
+  - choose:
+      # ---------------------------------------------------------------- on --
+      - alias: Presence detected and allowed
+        conditions:
+          - condition: trigger
+            id: detected
+          - condition: and
+            conditions: !input on_conditions
+        sequence:
+          - alias: Turn on the lights
+            choose:
+              - alias: With an explicit brightness
+                conditions:
+                  - condition: template
+                    value_template: "{{ brightness_pct | int(0) > 0 }}"
+                sequence:
+                  - action: light.turn_on
+                    target: !input lights
+                    data:
+                      brightness_pct: !input brightness_pct
+            default:
+              # No brightness set - turn on without touching the level, so
+              # Adaptive Lighting (or whatever last set it) stays in charge.
+              - action: light.turn_on
+                target: !input lights
+          - alias: Extra turn-on actions
+            choose: []
+            default: !input extra_on_actions
+
+      # ----------------------------------------------------------- blocked --
+      - alias: Presence detected but blocked
+        conditions:
+          - condition: trigger
+            id: detected
+        sequence:
+          - alias: Blocked actions
+            choose: []
+            default: !input blocked_actions
+
+      # --------------------------------------------------------------- off --
+      - alias: Area clear
+        conditions:
+          - condition: trigger
+            id:
+              - cleared
+              - recheck
+
+          # A per-sensor `for:` only proves that ONE sensor has been quiet, so
+          # require the whole set to be clear...
+          - alias: Every sensor is clear
+            condition: template
+            value_template: >-
+              {{ expand(presence_sensors)
+                 | selectattr('state', 'eq', 'on') | list | count == 0 }}
+
+          # ...and that the most recent one to clear has been quiet long
+          # enough. Without this, sensor A clearing first would take the lights
+          # out while sensor B had only just gone quiet.
+          - alias: The last sensor has been clear for the full hold time
+            condition: template
+            value_template: >-
+              {% set w = no_presence_wait %}
+              {% set hold = (w.days    | default(0)) * 86400
+                          + (w.hours   | default(0)) * 3600
+                          + (w.minutes | default(0)) * 60
+                          + (w.seconds | default(0)) %}
+              {% set last = expand(presence_sensors)
+                            | map(attribute='last_changed') | max %}
+              {{ (now() - last).total_seconds() >= hold - 1 }}
+
+          - condition: and
+            conditions: !input off_conditions
+        sequence:
+          - alias: Turn off the lights
+            action: light.turn_off
+            target: !input lights
+          - alias: Extra turn-off actions
+            choose: []
+            default: !input extra_off_actions
