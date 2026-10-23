@@ -18,7 +18,8 @@ logging.basicConfig(level=logging.CRITICAL)
 REPO = Path(__file__).resolve().parent.parent
 CFG = tempfile.mkdtemp(prefix="autolock-bp-test-")
 shutil.copytree(REPO / "blueprints" / "automation", Path(CFG) / "blueprints" / "automation" / "ChuckBuilds")
-DOORS = ["good", "dead", "jam", "reopen"]
+DOORS = ["good", "dead", "jam", "reopen", "sleepy"]
+awake = set()
 calls = []
 
 
@@ -44,10 +45,14 @@ async def main():
                     elif door == "jam":
                         hass.states.async_set(e, "jammed", {"friendly_name": "Jam Door"})
                         raise HomeAssistantError("Lock jammed")
-                    # dead / reopen: the command is accepted but nothing happens
+                    elif door == "sleepy" and door in awake:
+                        hass.states.async_set(e, "locked", {"friendly_name": "Sleepy Door"})
+                    # dead / reopen / sleepy before a wake: accepted, nothing happens
+            if name == "button.press":
+                awake.update(e.split(".")[1].removesuffix("_wake") for e in call.data["entity_id"])
         return handler
 
-    for svc in ["lock.lock", "notify.mobile_app_me", "logbook.log",
+    for svc in ["lock.lock", "button.press", "notify.mobile_app_me", "logbook.log",
                 "persistent_notification.create", "persistent_notification.dismiss"]:
         d, s = svc.split(".")
         hass.services.async_register(d, s, rec(svc))
@@ -70,7 +75,8 @@ async def main():
                 "lock_entity": f"lock.{door}", "door_sensor": f"binary_sensor.{door}_door",
                 "normal_delay": 0.5, "guest_delay": 0.5,
                 "guest_mode": "input_boolean.guest", "party_mode": "input_boolean.party",
-                "lock_attempts": 2 if door == "jam" else 1,
+                "lock_attempts": 2 if door in ("jam", "sleepy") else 1,
+                **({"wake_button": "button.sleepy_wake"} if door == "sleepy" else {}),
                 # picked phone + the same action typed: must still be ONE push
                 "notify_devices": [phone.id], "notify_service": "notify.mobile_app_me",
             }}})
@@ -109,6 +115,11 @@ async def main():
     check("jam: still retried after the lock errored", len(lock_calls("jam")) == 2, lock_calls("jam"))
     check("jam: alert reports 'jammed'", alerts("jam") and "jammed" in alerts("jam")[0]["message"], alerts("jam"))
     check("reopen: door opened during retry -> no alert", not alerts("reopen") and not notes("reopen"), calls)
+    wakes = [d for n, d in calls if n == "button.press"]
+    check("sleepy: woken once before the retry, then locked, no alert",
+          wakes == [{"entity_id": ["button.sleepy_wake"]}] and hass.states.get("lock.sleepy").state == "locked"
+          and not alerts("sleepy"), calls)
+    check("jam: no wake button set -> never pressed", all(d["entity_id"] == ["button.sleepy_wake"] for d in wakes), wakes)
 
     await hass.async_stop(force=True)
     print(f"\n{sum(ok)}/{len(ok)} passed")
