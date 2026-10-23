@@ -88,6 +88,17 @@ blueprint:
       name: If locking fails (optional)
       collapsed: true
       input:
+        wake_button:
+          name: Wake button
+          description: >-
+            Pressed before each retry, then the lock gets 5 seconds to wake up.
+            Wi-Fi locks that doze off can accept a lock command and never act on
+            it; August and Yale locks expose this as the "Wake" button.
+          default: ""
+          selector:
+            entity:
+              filter:
+                - domain: button
         notify_devices:
           name: Phones to tell
           description: >-
@@ -122,6 +133,7 @@ variables:
   normal_delay: !input normal_delay
   guest_delay: !input guest_delay
   lock_attempts: !input lock_attempts
+  wake_button: !input wake_button
   notify_devices: !input notify_devices
   notify_service: !input notify_service
   notify_targets: >-
@@ -207,6 +219,14 @@ actions:
   - repeat:
       count: !input lock_attempts
       sequence:
+        # A missed command usually means the lock was asleep: wake it first.
+        - if: "{{ repeat.index > 1 and (wake_button or '') | length > 0 }}"
+          then:
+            - action: button.press
+              target:
+                entity_id: "{{ wake_button }}"
+              continue_on_error: true
+            - delay: 5
         - action: lock.lock
           target:
             entity_id: !input lock_entity
