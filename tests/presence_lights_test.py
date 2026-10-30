@@ -3,7 +3,8 @@
 Two sensors, 2 s hold time, a recorded light.turn_on / turn_off. Covers: lights
 stay on while either sensor sees you, go off only after the LAST sensor has
 been clear for the hold time, and a reload (dropped `for:` timer) still turns
-them off.
+them off. A second room (1 s hold, 4 s extended hold) covers the extended hold
+toggle: the longer hold while it is on, and a re-check when it goes off.
 
     pip install homeassistant
     python tests/presence_lights_test.py        # ~15 s, exits 1 on any FAIL
@@ -20,6 +21,7 @@ REPO = Path(__file__).resolve().parent.parent
 CFG = tempfile.mkdtemp(prefix="lights-bp-test-")
 shutil.copytree(REPO / "blueprints" / "automation", Path(CFG) / "blueprints" / "automation" / "ChuckBuilds")
 A, B, L = "binary_sensor.mmwave", "binary_sensor.pir", "light.room"
+P, PL, PARTY = "binary_sensor.party_motion", "light.party_room", "input_boolean.party"
 calls = []
 
 
@@ -37,17 +39,22 @@ async def main():
     def rec(name):
         async def handler(call):
             calls.append(name)
-            hass.states.async_set(L, "on" if name.endswith("turn_on") else "off")
+            for e in call.data["entity_id"]:
+                hass.states.async_set(e, "on" if name.endswith("turn_on") else "off")
         return handler
 
     for s in ("turn_on", "turn_off"):
         hass.services.async_register("light", s, rec(f"light.{s}"))
-    for e in (A, B):
+    for e in (A, B, P, L, PL, PARTY):
         hass.states.async_set(e, "off")
-    hass.states.async_set(L, "off")
     autos = [{"id": "room", "alias": "room", "use_blueprint": {"path": "ChuckBuilds/presence_lights.yaml", "input": {
         "presence_sensors": [A, B], "lights": {"entity_id": L},
-        "no_presence_wait": {"hours": 0, "minutes": 0, "seconds": 2}}}}]
+        "no_presence_wait": {"hours": 0, "minutes": 0, "seconds": 2}}}},
+             {"id": "party_room", "alias": "party room", "use_blueprint": {"path": "ChuckBuilds/presence_lights.yaml", "input": {
+        "presence_sensors": [P], "lights": {"entity_id": PL},
+        "no_presence_wait": {"hours": 0, "minutes": 0, "seconds": 1},
+        "extended_hold_toggle": PARTY,
+        "extended_hold": {"hours": 0, "minutes": 0, "seconds": 4}}}}]
     # automation.reload reads configuration.yaml; JSON is valid YAML
     (Path(CFG) / "configuration.yaml").write_text(json.dumps({"automation": autos}))
     assert await async_setup_component(hass, "automation", {"automation": autos})
@@ -76,6 +83,23 @@ async def main():
     await hass.services.async_call("automation", "reload", blocking=True)
     await asyncio.sleep(3)
     check("reload mid-hold -> re-check still turns it off", hass.states.get(L).state == "off")
+
+    # Extended hold toggle on: the 1 s hold is replaced by the 4 s one.
+    hass.states.async_set(PARTY, "on")
+    hass.states.async_set(P, "on"); await asyncio.sleep(0.3)
+    check("extended hold: presence turns the light on", hass.states.get(PL).state == "on")
+    hass.states.async_set(P, "off"); await asyncio.sleep(2.5)
+    check("extended hold on, clear past the normal hold -> still on", hass.states.get(PL).state == "on")
+    await asyncio.sleep(2)
+    check("extended hold on, clear for the extended hold -> off", hass.states.get(PL).state == "off")
+
+    # Toggle switched off mid-hold: re-check against the normal hold, well
+    # before the extended timer would have fired.
+    hass.states.async_set(P, "on"); await asyncio.sleep(0.3)
+    hass.states.async_set(P, "off"); await asyncio.sleep(1.5)
+    check("extended hold on, 1.5 s clear -> still on", hass.states.get(PL).state == "on")
+    hass.states.async_set(PARTY, "off"); await asyncio.sleep(1.5)
+    check("toggle switched off -> re-check turns it off", hass.states.get(PL).state == "off")
 
     await hass.async_stop(force=True)
     print(f"\n{sum(ok)}/{len(ok)} passed")
