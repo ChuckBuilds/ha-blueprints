@@ -8,11 +8,10 @@ Assistant with fake people, sensors, panel and phone. No real devices.
 """
 import asyncio, logging, shutil, sys, tempfile
 from pathlib import Path
-from homeassistant import config_entries, core, loader
+from homeassistant import bootstrap, config_entries, core, loader
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.setup import async_setup_component
-from homeassistant.helpers import (area_registry, category_registry, device_registry, entity_registry,
-                                   floor_registry, issue_registry, label_registry)
+from homeassistant.helpers import device_registry
 
 logging.basicConfig(level=logging.CRITICAL)
 REPO = Path(__file__).resolve().parent.parent
@@ -31,12 +30,11 @@ PANEL = {"refuse_arm": False, "code": "1234"}
 async def main():
     hass = core.HomeAssistant(CFG)
     loader.async_setup(hass)
-    for reg in (category_registry, floor_registry, label_registry, area_registry,
-                device_registry, entity_registry, issue_registry):
-        await reg.async_load(hass)
     hass.config.skip_pip = True
     hass.config_entries = config_entries.ConfigEntries(hass, {})
-    await hass.config_entries.async_initialize()
+    # Also initializes config entries and loads registries, restore state and the
+    # trigger / condition helpers, as HA's own startup does
+    await bootstrap.async_load_base_functionality(hass)
     await hass.async_start()
 
     def rec(name):
