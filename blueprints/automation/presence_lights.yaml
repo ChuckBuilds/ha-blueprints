@@ -25,6 +25,9 @@ blueprint:
     * "Blocked actions" runs instead of the normal turn-on when the turn-on
     conditions fail - e.g. a 20% night-light instead of the full group.
 
+    * An optional extended hold toggle (e.g. a party mode) swaps in a longer
+    hold time while it is on, so nobody is left in the dark.
+
     * Extra actions hang off both edges for things that are not lights
     (switches, plugs, scenes, media players).
 
@@ -112,6 +115,29 @@ blueprint:
           selector:
             condition:
 
+        extended_hold_toggle:
+          name: Extended hold toggle
+          description: >
+            While this toggle is on, the extended hold time is used instead of
+            the normal one - e.g. a party mode so nobody is left in the dark.
+            When it is switched off, the area is re-checked against the normal
+            hold time. Leave empty to always use the normal hold time.
+          default: ""
+          selector:
+            entity:
+              filter:
+                - domain: input_boolean
+
+        extended_hold:
+          name: Extended hold time
+          description: How long every sensor must stay clear while the extended hold toggle is on.
+          default:
+            hours: 0
+            minutes: 30
+            seconds: 0
+          selector:
+            duration:
+
     extras:
       name: Extra actions
       icon: mdi:playlist-plus
@@ -146,10 +172,28 @@ mode: parallel
 max: 25
 max_exceeded: silent
 
+# The template trigger below needs the toggle, and triggers only see
+# trigger_variables.
+trigger_variables:
+  extended_hold_toggle: !input extended_hold_toggle
+
 variables:
   presence_sensors: !input presence_sensors
   no_presence_wait: !input no_presence_wait
+  extended_hold: !input extended_hold
   brightness_pct: !input brightness_pct
+  normal_hold_s: >-
+    {% set w = no_presence_wait %}
+    {{ (w.days    | default(0)) * 86400
+     + (w.hours   | default(0)) * 3600
+     + (w.minutes | default(0)) * 60
+     + (w.seconds | default(0)) }}
+  extended_hold_s: >-
+    {% set w = extended_hold %}
+    {{ (w.days    | default(0)) * 86400
+     + (w.hours   | default(0)) * 3600
+     + (w.minutes | default(0)) * 60
+     + (w.seconds | default(0)) }}
 
 triggers:
   - trigger: state
@@ -162,6 +206,21 @@ triggers:
     to: "off"
     for: !input no_presence_wait
     id: cleared
+
+  # While the extended hold toggle is on, the normal timer above fails the
+  # hold-time check and this longer one does the turning off.
+  - trigger: state
+    entity_id: !input presence_sensors
+    to: "off"
+    for: !input extended_hold
+    id: cleared_extended
+
+  # Toggle switched off: re-check against the normal hold time. A template
+  # trigger, because a state trigger cannot take an empty entity_id.
+  - trigger: template
+    value_template: >-
+      {{ extended_hold_toggle != '' and is_state(extended_hold_toggle, 'off') }}
+    id: recheck
 
   # A restart or reload drops the pending `for:` above. Sensors that are
   # already clear never change again, so re-check the area instead.
@@ -179,7 +238,10 @@ actions:
       - condition: trigger
         id: recheck
     then:
-      - delay: !input no_presence_wait
+      - delay:
+          seconds: >-
+            {{ extended_hold_s if extended_hold_toggle != ''
+               and is_state(extended_hold_toggle, 'on') else normal_hold_s }}
 
   - choose:
       # ---------------------------------------------------------------- on --
@@ -226,7 +288,16 @@ actions:
           - condition: trigger
             id:
               - cleared
+              - cleared_extended
               - recheck
+
+          # Without this, the extended timer would turn lights off long after
+          # the turn-off conditions blocked the normal one.
+          - alias: The extended timer only counts while the extended hold toggle is on
+            condition: template
+            value_template: >-
+              {{ trigger.id != 'cleared_extended' or (extended_hold_toggle != ''
+                 and is_state(extended_hold_toggle, 'on')) }}
 
           # A per-sensor `for:` only proves that ONE sensor has been quiet, so
           # require the whole set to be clear...
@@ -242,11 +313,8 @@ actions:
           - alias: The last sensor has been clear for the full hold time
             condition: template
             value_template: >-
-              {% set w = no_presence_wait %}
-              {% set hold = (w.days    | default(0)) * 86400
-                          + (w.hours   | default(0)) * 3600
-                          + (w.minutes | default(0)) * 60
-                          + (w.seconds | default(0)) %}
+              {% set hold = extended_hold_s if extended_hold_toggle != ''
+                 and is_state(extended_hold_toggle, 'on') else normal_hold_s %}
               {% set last = expand(presence_sensors)
                             | map(attribute='last_changed') | max %}
               {{ (now() - last).total_seconds() >= hold - 1 }}
