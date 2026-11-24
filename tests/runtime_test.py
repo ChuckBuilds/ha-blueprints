@@ -15,10 +15,9 @@ from pathlib import Path
 logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(name)s %(message)s")
 if os.environ.get("DEBUG"):
     logging.getLogger("homeassistant.components.automation").setLevel(logging.DEBUG)
-from homeassistant import core, loader
+from homeassistant import bootstrap, core, loader
 from homeassistant.setup import async_setup_component
-from homeassistant.helpers import (area_registry, entity_registry, device_registry, floor_registry,
-                                   label_registry, category_registry, issue_registry)
+from homeassistant.helpers import device_registry
 
 REPO = Path(__file__).resolve().parent.parent
 CFG = tempfile.mkdtemp(prefix="nl-bp-test-")
@@ -40,13 +39,12 @@ def bp(path, **inputs):
 async def main():
     hass = core.HomeAssistant(CFG)
     loader.async_setup(hass)
-    for reg in (category_registry, floor_registry, label_registry, area_registry,
-                device_registry, entity_registry, issue_registry):
-        await reg.async_load(hass)
     hass.config.skip_pip = True
     from homeassistant import config_entries
     hass.config_entries = config_entries.ConfigEntries(hass, {})
-    await hass.config_entries.async_initialize()
+    # Also initializes config entries and loads registries, restore state and the
+    # trigger / condition helpers, as HA's own startup does
+    await bootstrap.async_load_base_functionality(hass)
     await hass.async_start()
 
     def rec(name):
