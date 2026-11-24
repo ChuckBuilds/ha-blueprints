@@ -1,0 +1,101 @@
+# Noonlight + Alarmo: a complete working set.
+# Same as creating them in the UI from the imported blueprints. Change the
+# entity IDs, notify actions and instructions to yours.
+#
+# Alarmo replaces the manual alarm panel AND the "Alarm sensor trigger"
+# blueprint: add your doors / windows / motion to Alarmo itself
+# (Alarmo > Sensors), and set Alarmo's entry time to 0 (see docs/noonlight.md,
+# "Using Alarmo instead of a Manual panel").
+#
+# Helpers needed (examples/noonlight_helpers.yaml): input_select.noonlight_mode
+# (Off / Local / Test / Live) and input_text.noonlight_last_alarm_id.
+# Start with the mode on Off and work through the testing ladder.
+
+# Police: Alarmo triggered -> 60 s countdown -> Noonlight.
+# The push and the operator get "Front Door opened (armed away)" straight from
+# Alarmo, so no last-tripped-sensor helper is needed.
+- id: noonlight_police
+  alias: Noonlight - Police
+  use_blueprint:
+    path: ChuckBuilds/noonlight_dispatch.yaml
+    input:
+      trigger_entities: [alarm_control_panel.alarmo]
+      alarm_panel: alarm_control_panel.alarmo
+      panel_code: !secret alarmo_code            # adds the Face ID Disarm button
+      service: police
+      mode_helper: input_select.noonlight_mode
+      sandbox_token: !secret noonlight_sandbox_token
+      instructions: "Two adults and a dog live here. Side gate code 1234."
+      notify_service: notify.mobile_app_your_phone
+      countdown: 60
+      camera: camera.front_doorbell
+      tap_url: /lovelace/security
+      on_triggered_actions:                        # siren while the countdown runs
+        - action: switch.turn_on
+          target:
+            entity_id: switch.alarm_panel_pro_siren
+      on_cancelled_actions:
+        - action: switch.turn_off
+          target:
+            entity_id: switch.alarm_panel_pro_siren
+
+# Fire: smoke / CO -> 30 s countdown -> Noonlight. Runs even when Alarmo is
+# disarmed, and disarming never cancels it.
+- id: noonlight_fire
+  alias: Noonlight - Fire
+  use_blueprint:
+    path: ChuckBuilds/noonlight_dispatch.yaml
+    input:
+      trigger_entities:
+        - binary_sensor.hallway_smoke
+        - binary_sensor.hallway_co
+      service: fire
+      mode_helper: input_select.noonlight_mode
+      sandbox_token: !secret noonlight_sandbox_token
+      instructions: "Smoke / CO alarm. Occupants may be asleep upstairs."
+      notify_service: notify.mobile_app_your_phone
+      countdown: 30
+
+# One tracker for all services. With the panel set, one disarm (keypad, app,
+# Disarm button) also cancels an active police alarm at Noonlight.
+- id: noonlight_status_tracker
+  alias: Noonlight - status tracker
+  use_blueprint:
+    path: ChuckBuilds/noonlight_status_tracker.yaml
+    input:
+      notify_service: notify.mobile_app_your_phone
+      household_notify_service: notify.mobile_app_partner_phone
+      alarm_id_helper: input_text.noonlight_last_alarm_id
+      cancel_service_available: true               # Noonlight Enhanced 1.1.0+
+      alarm_panel: alarm_control_panel.alarmo
+      panel_code: !secret alarmo_code
+      smoke_sensors:
+        - binary_sensor.hallway_smoke
+        - binary_sensor.hallway_co
+
+# Alarmo refuses to arm with a door open (or a wrong code) but tells nobody.
+# This makes sure you know before you walk away.
+- id: alarmo_failed_to_arm
+  alias: Alarmo - failed to arm
+  mode: queued
+  triggers:
+    - trigger: event
+      event_type: alarmo_failed_to_arm
+  actions:
+    - action: notify.mobile_app_your_phone
+      data:
+        title: Alarm NOT armed
+        message: >-
+          {% if trigger.event.data.reason == 'open_sensors' %}
+            Still open: {{ trigger.event.data.sensors | map('state_attr', 'friendly_name')
+              | reject('none') | join(', ') }}. Close it and arm again.
+          {% elif trigger.event.data.reason == 'invalid_code' %}
+            Wrong or missing code.
+          {% else %}
+            Arming was refused ({{ trigger.event.data.reason }}).
+          {% endif %}
+        data:
+          tag: alarmo_failed_to_arm
+          push:
+            interruption-level: time-sensitive
+          priority: high
