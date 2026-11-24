@@ -93,6 +93,8 @@ the countdown starts", or it sounds on every normal arrival.
 
 4. Create the automations. `examples/noonlight_automations.yaml` shows a full
    working set (perimeter + motion, Police, Fire, tracker, presence).
+   Using Alarmo? Start from `examples/noonlight_alarmo_automations.yaml`
+   instead (no sensor-trigger automations needed).
 5. Work through the [testing ladder](#testing-ladder) before you ever pick
    `Live`.
 
@@ -102,7 +104,7 @@ the countdown starts", or it sounds on every normal arrival.
 |---|---|---|---|
 | Off | Yes, ends with "DRY RUN" | Never | Setting up sensors, notifications, cancel / disarm |
 | Local | Yes | Never - fires simulated Noonlight events inside HA | Testing the tracker, cancel buttons, webhook handling |
-| Test | Yes | Noonlight **sandbox** | Real SMS / voice calls, PIN, address, instructions |
+| Test | Yes | Noonlight **sandbox** | Real SMS / voice calls, PIN, cancel. The alarm cause and instructions go to the operator only, so check them in Live (see [What Noonlight shows](#what-noonlight-shows-and-to-whom)) |
 | Live | Yes | Noonlight **production** | Real dispatch |
 | anything else | Yes, ends with "NOT SENT" | Never | A renamed option or unavailable helper fails safe |
 
@@ -168,9 +170,26 @@ the countdown starts", or it sounds on every normal arrival.
 
 **Missing phone warning.** If a phone you picked is removed, or the Companion app registers again as a new device, the automation raises a persistent notification naming itself (checked at start, on reload and when a device is removed). Re-pick the phone to clear it.
 
+**The buttons need a way back to Home Assistant.** Cancel, Disarm and Dispatch now are sent from the phone to your Home Assistant. Away from home they only arrive if the Companion app can reach HA remotely (Home Assistant Cloud / Nabu Casa, or your own external URL set in the app). Without remote access the push still arrives, but a Cancel tap is lost and the countdown runs out and dispatches. Before relying on it, turn off Wi-Fi on your phone, trip a sensor in Off mode, and tap Cancel: you should get the "cancelled" push.
+
 ### Using Alarmo instead of a Manual panel
 
 [Alarmo](https://github.com/nielsfaber/alarmo) adds per-person codes and manages sensors, entry/exit delays and open-door checks itself, so the **Alarm sensor trigger** blueprint isn't needed with it. Point the dispatch automation's trigger and panel at Alarmo's panel. The dispatch reads Alarmo's `open_sensors` and `arm_mode` attributes, so the push and the Noonlight operator still get "Front Door opened (armed night)". Set Alarmo's entry time to 0 for the one-wait setup. Alarmo doesn't call Noonlight; the dispatch and status tracker blueprints still do that.
+
+`examples/noonlight_alarmo_automations.yaml` is a full Alarmo setup (Police with siren, Fire, tracker, failed-to-arm push). Alarmo settings that matter:
+
+| Alarmo setting | Set to | Why |
+|---|---|---|
+| Entry time (each armed mode) | 0 | Otherwise Alarmo sits in `pending` with no push, then the countdown starts: two waits, only the second one tells you |
+| Exit time (Away) | What you need to leave | Exit delay doesn't affect the dispatch |
+| Sensor "Allow open" | Off for doors | Alarmo refuses to arm with that door open |
+| Sensor type | Door / window / motion | Sets the wording: "Front Door opened" vs "Motion detected" |
+| Sensor "Trigger when unavailable" | Off, unless the sensor is wired | A Zigbee or cloud sensor dropping out shouldn't call the police |
+| Alarmo's own notifications | Off for "triggered" | The dispatch push already covers it; two pushes for one alarm is confusing |
+
+**Arming with a door open tells nobody by default.** Alarmo refuses to arm and fires `alarmo_failed_to_arm`, but nothing reaches your phone, so you can walk away thinking you're armed. The example file has a small automation for it, or turn on Alarmo's own "Failed to arm" notification (Alarmo > Actions).
+
+**Give sensors a device class.** A sensor with none (e.g. a raw Konnected or ESPHome zone) shows up as "Zone 6 triggered". Set it to door / window / motion in the device's settings or in ESPHome.
 
 ## Noonlight status tracker
 
@@ -321,11 +340,27 @@ become one:
 - Once Noonlight closes or cancels the alarm on their side (webhook), a later
   disarm does nothing more.
 
-The current Noonlight Enhanced release has no cancel action; a pull request
-adding `noonlight.cancel_alarm` is proposed upstream. Until your installed
-version has it, keep "Integration has noonlight.cancel_alarm" **off** - the
+Noonlight Enhanced 1.1.0 and later has `noonlight.cancel_alarm`: check
+Developer tools > Actions for it, then turn "Integration has
+noonlight.cancel_alarm" **on**. On an older version keep it **off** - the
 ACTIVE push then tells you to cancel by phone instead of showing a button
 that cannot work.
+
+Sandbox alarms: the integration keeps the sandbox token in memory only. If
+Home Assistant restarts while a sandbox alarm is active, cancel it by phone
+with your PIN, or call `noonlight.cancel_alarm` with `server_token_override`.
+Live alarms are not affected.
+
+### Finding an alarm ID
+
+`noonlight.cancel_alarm` needs the `alarm_id`. In order of ease:
+
+- The status tracker saves it in its "Last alarm ID" helper and shows it in
+  the ACTIVE push.
+- Developer tools > Events, listen to `noonlight_alarm_created` (the exact
+  name - the listener does not accept wildcards like `noonlight_alarm_*`).
+- `/config/.storage/noonlight.alarm_routes` lists recent alarms by ID with
+  their environment (sandbox / production). Read it, don't edit it.
 
 ## Testing ladder
 
@@ -342,6 +377,25 @@ Noonlight-format webhooks to your own HA.
 **Stage 2 - Test (Noonlight sandbox).** Put your sandbox server token in the
 dispatch automation. Noonlight's sandbox really texts and calls the phone
 numbers in the integration.
+
+Optional first step, before any automation: check the token by hand in
+Developer tools > Actions (YAML mode). The Actions page can't read
+`!secret`, so paste the token; it isn't saved.
+
+```yaml
+action: noonlight.create_alarm
+data:
+  service: police
+  api_endpoint: https://api-sandbox.noonlight.com/dispatch/v1
+  server_token_override: "your sandbox token"
+  alarm_cause: "SANDBOX TEST - front door opened"
+  instructions: "TEST - do not dispatch"
+```
+
+Expect `noonlight_alarm_created` with an `alarm_id` and a text from Noonlight.
+Cancel it with `noonlight.cancel_alarm` and that ID: you should get
+`noonlight_alarm_canceled` and a cancellation text. Run the create again
+without `server_token_override`: it must fail with "no sandbox server token".
 
 **Stage 3 - Live.** First tell everyone who may get a call or text. Set the
 Police instructions to `TEST - please call to verify, do not dispatch`, set
@@ -361,8 +415,10 @@ cancel. Put your real instructions back. Leave mode on Live.
 | Sandbox token handling | 2 | Blank token: "FAILED"; wrong token: "FAILED" with the API error |
 | Sandbox vs production protection | 2, 3 | Live traces show the production endpoint and no token |
 | Fail-safe on errors | 1, 2 | Wrong token, and the "no response" warning (disable the integration, run Test) |
-| Dispatch instructions | 2, 3 | Operator reads back the alarm cause and your instructions |
+| Dispatch instructions | 3 | Live operator reads back the alarm cause and your instructions. The sandbox text never shows them |
 | Address | 2, 3 | Sandbox text / Live operator confirms it |
+| Buttons work away from home | 0 | Wi-Fi off on the phone, trip a sensor, tap Cancel: "cancelled" push arrives |
+| Arming with a door open | 0 | Door open, arm: the panel refuses and your phone is told |
 | SMS notifications | 2, 3 | Primary and secondary phones get Noonlight's texts |
 | Voice calls | 2, 3 | Primary and secondary phones get Noonlight's calls |
 | Cancellation and PIN | 1, 2, 3 | Local cancel button; sandbox cancel + wrong PIN; Live cancel by phone with PIN |
@@ -375,8 +431,27 @@ cancel. Put your real instructions back. Leave mode on Live.
 
 `tests/runtime_test.py` runs all four blueprints inside a headless Home
 Assistant with recorded (fake) notify, Noonlight and panel actions and plays
-through 71 scenarios. Needs `pip install homeassistant`; takes about 2.5
+through 93 scenarios. Needs `pip install homeassistant`; takes about 2.5
 minutes and exits non-zero on any failure.
+
+`tests/alarmo_test.py` runs the dispatch and status tracker against a real
+Alarmo (downloaded from its GitHub release, or `ALARMO_DIR=/path/to/alarmo`)
+instead of a fake panel: arming with codes, entry delay, door / window /
+motion per mode, the Disarm button's code, keypad disarm before and after
+dispatch, three doors at once, sensor dropouts, arming with a door open and
+the failed-to-arm push. Needs `pip install homeassistant paho-mqtt`; takes
+about a minute.
+
+## What Noonlight shows, and to whom
+
+| Who | Sees | Includes the alarm cause? |
+|---|---|---|
+| You, on the HA countdown / ACTIVE push | "Police alarm: Front Door opened (armed away)" | Yes |
+| You, in Noonlight's text / call | Noonlight's own fixed message | **No** - Noonlight's template; nothing the integration sends changes it |
+| The Noonlight operator | Address, name, phone, plus "Alarm cause is ... " followed by your instructions | Yes |
+
+So the sandbox text not mentioning the door is expected. The cause and
+instructions can only be confirmed in Stage 3, by asking the operator.
 
 ## Disclaimer
 
